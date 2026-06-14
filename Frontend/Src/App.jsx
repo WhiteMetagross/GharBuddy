@@ -8,6 +8,7 @@ import WhatsAppMock from "./Components/WhatsAppMock";
 import EnergyTracker from "./Components/EnergyTracker";
 import HouseholdMap from "./Components/HouseholdMap";
 import VoiceWidget from "./Components/VoiceWidget";
+import LoginModal from "./Components/LoginModal";
 
 export default function App() {
   const [devices, setDevices] = useState({});
@@ -31,6 +32,13 @@ export default function App() {
   const [lastTriggerResult, setLastTriggerResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [showLogin, setShowLogin] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+
+  // Session-backed auth token (Issue #6 — full login gate)
+  const [authToken, setAuthToken] = useState(() => sessionStorage.getItem("gb_token") || "");
+  const [loginError, setLoginError] = useState("");
+  const [loginForm, setLoginForm] = useState({ username: "admin", password: "gharbuddy123" });
 
   const { isConnected, lastMessage } = useWebSocket("ws://localhost:8000/ws");
   const pollingIntervalRef = useRef(null);
@@ -68,6 +76,46 @@ export default function App() {
     syncData();
   }, []);
 
+  // Restore session from localStorage on mount (legacy token support)
+  useEffect(() => {
+    const token = localStorage.getItem("gharbuddy_token");
+    const userJson = localStorage.getItem("gharbuddy_user");
+    if (token && userJson) {
+      try {
+        const user = JSON.parse(userJson);
+        setCurrentUser(user);
+        // Also populate sessionStorage token if not already set
+        if (!sessionStorage.getItem("gb_token")) {
+          sessionStorage.setItem("gb_token", token);
+          setAuthToken(token);
+        }
+      } catch (_) {
+        // Ignore malformed stored user
+      }
+    }
+  }, []);
+
+  // Issue #6 — Handle login form submission (full-page gate)
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginError("");
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loginForm)
+      });
+      if (!res.ok) { setLoginError("Invalid credentials"); return; }
+      const data = await res.json();
+      sessionStorage.setItem("gb_token", data.access_token);
+      setAuthToken(data.access_token);
+      setCurrentUser({ username: data.username, role: data.role });
+      setLoginError("");
+    } catch (_e) {
+      setLoginError("Cannot connect to backend");
+    }
+  };
+
   // Effect A — handle WebSocket messages
   useEffect(() => {
     if (!lastMessage || lastMessage.type === "ping") return;
@@ -95,9 +143,9 @@ export default function App() {
   const handleStateChange = async (type, payload) => {
     try {
       if (type === "settings") {
-        await BackendService.updateSettings(payload);
+        await BackendService.updateSettings(payload, authToken);
       } else if (type === "sensor") {
-        const response = await BackendService.triggerSensor(payload.sensorId, payload.value);
+        const response = await BackendService.triggerSensor(payload.sensorId, payload.value, authToken);
         setLastTriggerResult(response);
       }
       await syncData();
@@ -108,7 +156,7 @@ export default function App() {
 
   const handleToggleDevice = async (deviceId, status) => {
     try {
-      await BackendService.toggleDevice(deviceId, status);
+      await BackendService.toggleDevice(deviceId, status, authToken);
       await syncData();
     } catch (e) {
       console.error("Error toggling device:", e);
@@ -117,13 +165,44 @@ export default function App() {
 
   const handleApproveAction = async (actionId, approve) => {
     try {
-      await BackendService.approveAction(actionId, approve);
+      await BackendService.approveAction(actionId, approve, authToken);
       // Remove or resolve active suggestion locally
       await syncData();
     } catch (e) {
       console.error("Error approving action:", e);
     }
   };
+
+  // Issue #6 — Full-page login gate: show login screen until authenticated
+  if (!authToken) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", height: "100vh", alignItems: "center", justifyContent: "center", gap: "20px", background: "var(--bgPrimary)" }}>
+        <div style={{ fontSize: "48px" }}>🪔</div>
+        <h1 className="gradientText" style={{ fontSize: "28px" }}>GharBuddy</h1>
+        <p style={{ color: "var(--textSecondary)", fontSize: "13px" }}>Context-Aware Smart Home for Indian Households</p>
+        <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: "12px", width: "300px" }}>
+          <input
+            value={loginForm.username}
+            onChange={e => setLoginForm(f => ({ ...f, username: e.target.value }))}
+            placeholder="Username"
+            aria-label="Username"
+            style={{ padding: "10px 14px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "white", fontSize: "14px", fontFamily: "var(--fontFamily)" }}
+          />
+          <input
+            type="password"
+            value={loginForm.password}
+            onChange={e => setLoginForm(f => ({ ...f, password: e.target.value }))}
+            placeholder="Password"
+            aria-label="Password"
+            style={{ padding: "10px 14px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "white", fontSize: "14px", fontFamily: "var(--fontFamily)" }}
+          />
+          {loginError && <span role="alert" style={{ color: "var(--colorDanger)", fontSize: "12px" }}>{loginError}</span>}
+          <button type="submit" className="btn btnPrimary" style={{ padding: "12px" }}>Sign In →</button>
+          <p style={{ fontSize: "11px", color: "var(--textMuted)", textAlign: "center" }}>Demo: admin / gharbuddy123</p>
+        </form>
+      </div>
+    );
+  }
 
   if (loading && Object.keys(devices).length === 0) {
     return (
@@ -176,6 +255,36 @@ export default function App() {
               );
             })()}
           </div>
+          {/* Auth user badge (Issue #6) */}
+          {currentUser ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <div className="statusBadge" style={{ background: "rgba(46,213,115,0.1)", color: "var(--colorSuccess)", border: "1px solid rgba(46,213,115,0.2)", cursor: "default" }}>
+                &#x1F464; {currentUser.username} <span style={{ opacity: 0.7, fontSize: "10px" }}>({currentUser.role})</span>
+              </div>
+              <button
+                onClick={() => {
+                  sessionStorage.removeItem("gb_token");
+                  localStorage.removeItem("gharbuddy_token");
+                  localStorage.removeItem("gharbuddy_user");
+                  setAuthToken("");
+                  setCurrentUser(null);
+                }}
+                className="btn"
+                style={{ fontSize: "11px", padding: "4px 10px" }}
+                aria-label="Sign out"
+              >
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowLogin(true)}
+              className="btn btnPrimary"
+              style={{ fontSize: "12px", padding: "6px 14px" }}
+            >
+              &#x1F511; Sign In
+            </button>
+          )}
         </div>
       </header>
 
@@ -209,8 +318,22 @@ export default function App() {
       </main>
 
       <footer style={{ marginTop: "48px", textAlign: "center", padding: "20px 0", borderTop: "1px solid rgba(255,255,255,0.05)", fontSize: "11px", color: "var(--textMuted)" }}>
-        GharBuddy Smart Systems • HackOn with Amazon Season 6.0 Submission • Powered by AWS Bedrock Claude & AWS IoT Core
+        GharBuddy Smart Systems &bull; HackOn with Amazon Season 6.0 Submission &bull; Powered by AWS Bedrock Claude &amp; AWS IoT Core
       </footer>
+      {showLogin && (
+        <LoginModal
+          onLogin={(u) => {
+            const token = u.access_token || u.token || "";
+            if (token) {
+              sessionStorage.setItem("gb_token", token);
+              setAuthToken(token);
+            }
+            setCurrentUser({ username: u.username, role: u.role });
+            setShowLogin(false);
+          }}
+          onClose={() => setShowLogin(false)}
+        />
+      )}
     </div>
   );
 }

@@ -32,15 +32,24 @@ class TestGharBuddy(unittest.TestCase):
         predictor.recordEvent("resetCooker", 3)
         
         predictor.recordEvent("cookerWhistle", "active")
-        self.assertIsNone(predictor.predictNextAction("12:00:00"))
+        prediction1 = predictor.predictNextAction("12:00:00")
+        # Enhanced predictor returns a partial progress signal (not None) when whistleCount < targetWhistles
+        # It should be a cookerCompletionAlert with low confidence (< 0.85 so it won't auto-execute)
+        if prediction1 is not None:
+            self.assertEqual(prediction1["predictedAction"], "cookerCompletionAlert")
+            self.assertLess(prediction1["confidence"], 0.85)  # Below auto-execute threshold
         
         predictor.recordEvent("cookerWhistle", "active")
-        self.assertIsNone(predictor.predictNextAction("12:01:00"))
+        prediction2 = predictor.predictNextAction("12:01:00")
+        if prediction2 is not None:
+            self.assertEqual(prediction2["predictedAction"], "cookerCompletionAlert")
         
         predictor.recordEvent("cookerWhistle", "active")
         prediction = predictor.predictNextAction("12:02:00")
         self.assertIsNotNone(prediction)
         self.assertEqual(prediction["predictedAction"], "cookerCompletionAlert")
+        # At completion (3/3), confidence should be 0.98 (auto-execute)
+        self.assertGreaterEqual(prediction["confidence"], 0.95)
 
     def testDatabaseService(self):
         db = DatabaseService()

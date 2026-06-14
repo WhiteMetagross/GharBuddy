@@ -1,11 +1,18 @@
 import json
 import math
+import time
+from datetime import datetime, timezone
 from Backend.Config.AppConfig import AppConfig
 
 class VectorStoreService:
     def __init__(self, postgresService):
         self.db = postgresService
         self.bedrockClient = None
+        # Issue #20 — cache hit/miss counters
+        self._cacheHits = 0
+        self._cacheMisses = 0
+        # Issue #21 — auto-consolidation tracking
+        self.lastConsolidationTime = None
         self.initBedrockClient()
 
     def initBedrockClient(self):
@@ -30,9 +37,11 @@ class VectorStoreService:
         
         cached = self.db.getEmbeddingFromCache(textHash)
         if cached is not None:
+            self._cacheHits += 1
             print(f"[Cache Log] HIT for embedding text: '{text[:30]}...'")
             return cached
-            
+
+        self._cacheMisses += 1
         print(f"[Cache Log] MISS for embedding text: '{text[:30]}...'")
         
         embedding = None
@@ -100,6 +109,21 @@ class VectorStoreService:
 
         return vector
 
+    def getCacheStats(self):
+        """Issue #20 — Returns embedding cache hit/miss statistics."""
+        totalRequests = self._cacheHits + self._cacheMisses
+        hitRate = (self._cacheHits / totalRequests) if totalRequests > 0 else 0.0
+        return {
+            "hits": self._cacheHits,
+            "misses": self._cacheMisses,
+            "hitRate": hitRate,
+            "totalRequests": totalRequests,
+        }
+
+    def evictOldestEmbeddings(self, keepCount=500):
+        """Issue #20 — Evicts oldest embeddings keeping only the most recent keepCount entries."""
+        self.db.evictOldEmbeddings(maxEntries=keepCount)
+
     def addRule(self, content, category):
         vector = self.getEmbedding(content)
         self.db.insertVectorRule(content, vector, category)
@@ -111,7 +135,7 @@ class VectorStoreService:
         Applies a minimum similarity score threshold of 0.65 for Bedrock, and 0.20 for mock mode.
         """
         threshold = 0.65 if self.bedrockClient else 0.20
-        
+
         if self.db.postgresMode == "live" and self.db.hasPgVector:
             try:
                 queryVector = self.getEmbedding(queryText)
@@ -140,22 +164,42 @@ class VectorStoreService:
                 print(f"Error in native pgvector similarity query: {e}. Falling back to Python calculations.")
 
         queryVector = self.getEmbedding(queryText)
-        records = self.db.getVectors()
+        return self.querySimilarRulesChunked(queryVector, topK=topK, threshold=threshold)
 
-        scoredRecords = []
-        for rec in records:
-            similarity = self.calculateCosineSimilarity(queryVector, rec["vector"])
-            scoredRecords.append({
-                "content": rec["content"],
-                "category": rec["category"],
-                "similarity": similarity
-            })
+    def querySimilarRulesChunked(self, queryVector, topK=2, threshold=0.20, chunkSize=50):
+        """
+        Issue #18 — Iterate over VectorIndex in chunks instead of loading all records at once.
+        Uses chunked processing to avoid OOM on large rule sets.
+        """
+        t0 = time.monotonic()
+        total = 0
+        bestResults = []
+        offset = 0
 
-        # Sort descending by similarity score
-        scoredRecords.sort(key=lambda x: x["similarity"], reverse=True)
-        # Filter by threshold
-        filteredRecords = [r for r in scoredRecords if r["similarity"] >= threshold]
-        return filteredRecords[:topK]
+        while True:
+            chunk = self.db.getVectorsChunk(offset=offset, limit=chunkSize)
+            if not chunk:
+                break
+            for rec in chunk:
+                if not isinstance(rec.get("vector"), list):
+                    continue
+                similarity = self.calculateCosineSimilarity(queryVector, rec["vector"])
+                if similarity >= threshold:
+                    bestResults.append({
+                        "content": rec["content"],
+                        "category": rec["category"],
+                        "similarity": similarity
+                    })
+            total += len(chunk)
+            offset += chunkSize
+            if len(chunk) < chunkSize:
+                break  # Last chunk
+
+        elapsed = (time.monotonic() - t0) * 1000
+        print(f"[RAG] Python fallback chunked scan: {total} rules in {elapsed:.1f}ms")
+
+        bestResults.sort(key=lambda x: x["similarity"], reverse=True)
+        return bestResults[:topK]
 
     def calculateCosineSimilarity(self, v1, v2):
         dotProduct = sum(x * y for x, y in zip(v1, v2))
@@ -164,6 +208,63 @@ class VectorStoreService:
         if not magnitude1 or not magnitude2:
             return 0.0
         return dotProduct / (magnitude1 * magnitude2)
+
+    def shouldAutoConsolidate(self, intervalHours=168):
+        """Issue #21 — Returns True if enough time has passed since last consolidation (default: weekly)."""
+        if self.lastConsolidationTime is None:
+            return True
+        elapsed = datetime.now(timezone.utc) - self.lastConsolidationTime
+        return elapsed.total_seconds() >= intervalHours * 3600
+
+    def getConsolidationStats(self) -> dict:
+        """Returns stats useful for deciding when to run consolidation. Issue #21."""
+        total = self.db.getVectorCount()
+        # Count by category
+        records = self.db.getVectors()
+        category_counts = {}
+        for r in records:
+            cat = r.get("category", "unknown")
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+        return {
+            "totalRules": total,
+            "categoryBreakdown": category_counts,
+            "recommendConsolidation": total > 20,
+        }
+
+    def scheduleAutoConsolidation(self, bedrockService, similarityThreshold=0.85):
+        """
+        Issue #21 — Runs consolidation only if total rules > 20 (avoids over-consolidating small sets).
+        Returns stats dict with consolidated count, totalBefore, and totalAfter.
+        """
+        records = self.db.getVectors()
+        totalBefore = len(records)
+
+        if totalBefore <= 20:
+            return {
+                "consolidated": 0,
+                "skipped": f"Only {totalBefore} rules — minimum 21 required for auto-consolidation",
+                "totalBefore": totalBefore,
+                "totalAfter": totalBefore,
+            }
+
+        count = self.consolidateRules(bedrockService)
+        self.lastConsolidationTime = datetime.now(timezone.utc)
+
+        recordsAfter = self.db.getVectors()
+        totalAfter = len(recordsAfter)
+
+        return {
+            "consolidated": count,
+            "skipped": None,
+            "totalBefore": totalBefore,
+            "totalAfter": totalAfter,
+        }
+
+    def autoConsolidate(self, bedrockService):
+        """Issue #21 — Runs consolidateRules and updates lastConsolidationTime."""
+        count = self.consolidateRules(bedrockService)
+        self.lastConsolidationTime = datetime.now(timezone.utc)
+        return count
 
     def consolidateRules(self, bedrockService):
         """

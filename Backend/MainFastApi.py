@@ -1,10 +1,12 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, UploadFile, File, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
+from Backend.Services.AuthService import authenticate, createAccessToken, verifyToken, verifyTokenFull, loginUser, ACCESS_TOKEN_EXPIRE_MINUTES
 import asyncio
 import json as _json
 import tempfile
@@ -72,6 +74,24 @@ loadSheddingCalendar = LoadSheddingCalendar()
 simulatedTime = "06:00:00"
 powerStatus = "GRID"
 
+# ---------------------------------------------------------------------------
+# Auth security scheme and dependency
+# ---------------------------------------------------------------------------
+
+_security = HTTPBearer(auto_error=False)
+
+def requireAuth(credentials: HTTPAuthorizationCredentials = Depends(_security)):
+    """Dependency that validates Bearer token. In mockMode always passes."""
+    from Backend.Config.AppConfig import AppConfig
+    if AppConfig.mockMode:
+        return "admin"  # bypass in demo mode
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    username = verifyToken(credentials.credentials)
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return username
+
 
 # ---------------------------------------------------------------------------
 # WebSocket helpers
@@ -135,7 +155,7 @@ def getDevices():
     return databaseInstance.getDeviceStates()
 
 @app.post("/api/devices/toggle")
-def toggleDevice(req: DeviceToggleRequest, background_tasks: BackgroundTasks):
+def toggleDevice(req: DeviceToggleRequest, background_tasks: BackgroundTasks, user: str = Depends(requireAuth)):
     success = databaseInstance.updateDeviceState(req.deviceId, req.status)
     if not success:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -155,7 +175,7 @@ def getSystemState():
     return buildSystemState()
 
 @app.post("/api/settings/update")
-def updateSettings(req: SettingsUpdateRequest, background_tasks: BackgroundTasks):
+def updateSettings(req: SettingsUpdateRequest, background_tasks: BackgroundTasks, user: str = Depends(requireAuth)):
     global simulatedTime, powerStatus
     if req.simulatedTime is not None:
         simulatedTime = req.simulatedTime
@@ -210,8 +230,18 @@ def executeAction(decision):
     msgText = f"सक्रिय (Active): {explanation}"
     twilioInstance.sendWhatsApp(msgText, actionId=actionId, suggestActions=False)
 
+@app.get("/api/auth/me")
+def getMe(user: str = Depends(requireAuth)):
+    """Issue #6 — Return the authenticated user's info."""
+    role = None
+    from Backend.Services.AuthService import DEMO_USERS
+    user_entry = DEMO_USERS.get(user)
+    if user_entry:
+        role = user_entry.get("role")
+    return {"username": user, "role": role or "member"}
+
 @app.post("/api/sensors/trigger")
-def triggerSensor(req: SensorTriggerRequest, background_tasks: BackgroundTasks):
+def triggerSensor(req: SensorTriggerRequest, background_tasks: BackgroundTasks, user: str = Depends(requireAuth)):
     # Log sensor hit
     event = predictorInstance.recordEvent(req.sensorId, req.value, simulatedTime)
     databaseInstance.logEvent(event)
@@ -287,7 +317,7 @@ def triggerSensor(req: SensorTriggerRequest, background_tasks: BackgroundTasks):
     }
 
 @app.post("/api/actions/override")
-def handleActionOverride(req: ActionOverrideRequest, background_tasks: BackgroundTasks):
+def handleActionOverride(req: ActionOverrideRequest, background_tasks: BackgroundTasks, user: str = Depends(requireAuth)):
     if not req.approve:
         rule = bedrockInstance.generatePreferenceRule(req.actionId, simulatedTime, powerStatus)
         vectorStoreInstance.addRule(rule, "override")
@@ -329,12 +359,65 @@ def handleActionOverride(req: ActionOverrideRequest, background_tasks: Backgroun
     background_tasks.add_task(broadcastSnapshot)
     return {"status": "executed", "decision": decision}
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest):
+    # Try multi-user demo store first (Issue #6)
+    result = loginUser(req.username, req.password)
+    if result:
+        # Also expose as access_token for backward compat with existing frontend
+        return {
+            "access_token": result["token"],
+            "token": result["token"],
+            "token_type": "bearer",
+            "username": result["username"],
+            "role": result["role"],
+            "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES,
+            "expiresIn": result["expiresIn"],
+            "message": "GharBuddy authentication successful"
+        }
+    # Legacy single-user env-var fallback
+    if not authenticate(req.username, req.password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = createAccessToken(req.username)
+    return {
+        "access_token": token,
+        "token": token,
+        "token_type": "bearer",
+        "username": req.username,
+        "role": "parent",
+        "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES,
+        "expiresIn": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "message": "GharBuddy authentication successful"
+    }
+
+@app.get("/api/auth/verify")
+def verifyAuth(authorization: str = Header(default="")):
+    """Issue #6 - Verify a Bearer token and return user info."""
+    token = authorization.replace("Bearer ", "").strip()
+    payload = verifyTokenFull(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return {"valid": True, "username": payload.get("sub"), "role": payload.get("role", "parent")}
+
+@app.get("/api/auth/status")
+def authStatus():
+    from Backend.Config.AppConfig import AppConfig
+    return {
+        "mockMode": AppConfig.mockMode,
+        "authRequired": not AppConfig.mockMode,
+        "message": "In mock mode, all endpoints are accessible without authentication."
+    }
+
 class VectorRuleRequest(BaseModel):
     content: str
     category: str
 
 @app.post("/api/vectors/add")
-def addVectorRule(req: VectorRuleRequest):
+def addVectorRule(req: VectorRuleRequest, user: str = Depends(requireAuth)):
     try:
         vectorStoreInstance.addRule(req.content, req.category)
         return {"status": "success", "message": "Rule successfully embedded and stored."}
@@ -356,6 +439,35 @@ def consolidateVectorRules():
         return {"status": "success", "consolidatedCount": count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/vectors/cache-stats")
+def getVectorCacheStats():
+    return vectorStoreInstance.getCacheStats()
+
+@app.get("/api/cache/diagnostics")
+def getCacheDiagnostics():
+    return databaseInstance.pgService.getCacheDiagnostics()
+
+@app.post("/api/vectors/cache-evict")
+def evictVectorCache():
+    vectorStoreInstance.evictOldestEmbeddings(keepCount=500)
+    return {"status": "success", "message": "Old embeddings evicted. Kept 500 most recent."}
+
+@app.get("/api/vectors/consolidation-stats")
+def getConsolidationStats():
+    return vectorStoreInstance.getConsolidationStats()
+
+@app.get("/api/vectors/stats")
+def getVectorStats():
+    try:
+        return vectorStoreInstance.getConsolidationStats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/vectors/auto-consolidate")
+def autoConsolidate():
+    result = vectorStoreInstance.scheduleAutoConsolidation(bedrockInstance)
+    return result
 
 @app.get("/api/safety/caregiver")
 def getCaregiverStatus():
