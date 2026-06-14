@@ -8,6 +8,7 @@ import WhatsAppMock from "./Components/WhatsAppMock";
 import EnergyTracker from "./Components/EnergyTracker";
 import HouseholdMap from "./Components/HouseholdMap";
 import VoiceWidget from "./Components/VoiceWidget";
+import CommunityEnergyDashboard from "./Components/CommunityEnergyDashboard";
 import LoginModal from "./Components/LoginModal";
 
 export default function App() {
@@ -314,6 +315,7 @@ export default function App() {
         <div className="columnRight">
           <ReasoningPanel lastTriggerResult={lastTriggerResult} />
           <WhatsAppMock notifications={notifications} onApproveAction={handleApproveAction} />
+          <CommunityEnergyDashboard />
         </div>
       </main>
 

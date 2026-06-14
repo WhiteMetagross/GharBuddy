@@ -572,6 +572,113 @@ def getLoadSheddingRisk():
 def getLoadSheddingSchedule():
     return loadSheddingCalendar.getSchedule()
 
+import random as _random
+
+# Simulated community homes (demo data, deterministic based on time)
+COMMUNITY_HOMES = [
+    {"id": "home_A", "name": "Sharma House",   "solarKw": 2.5},
+    {"id": "home_B", "name": "Patel House",    "solarKw": 3.0},
+    {"id": "home_C", "name": "Gupta Residence","solarKw": 0.0},
+    {"id": "home_D", "name": "Iyer Villa",     "solarKw": 4.0},
+    {"id": "home_E", "name": "Singh Bhawan",   "solarKw": 1.5},
+]
+
+@app.get("/api/community/energy")
+def getCommunityEnergy():
+    """
+    Issue #7 — Returns simulated community energy stats:
+    peak demand per home, solar generation, peer-to-peer trading recs,
+    and cooperative load-shedding schedule.
+    """
+    import math as _math
+
+    # Use simulatedTime to make the data time-aware
+    try:
+        parts = simulatedTime.split(":")
+        hourFloat = int(parts[0]) + int(parts[1]) / 60.0
+    except Exception:
+        hourFloat = 12.0
+
+    # Simulate solar generation curve (peaks at noon)
+    solarFactor = max(0.0, _math.sin(_math.pi * (hourFloat - 6) / 12)) if 6 <= hourFloat <= 18 else 0.0
+
+    homes = []
+    totalDemandW = 0
+    totalSolarW = 0
+    totalExcessW = 0
+
+    for home in COMMUNITY_HOMES:
+        # Simulate load (higher in morning and evening, lower at noon)
+        baseLoad = 800 + 400 * abs(_math.sin(_math.pi * hourFloat / 12))
+        currentLoadW = round(baseLoad + (hash(home["id"]) % 300))
+
+        # Solar generation
+        solarGenerationW = round(home["solarKw"] * 1000 * solarFactor)
+        excessW = max(0, solarGenerationW - currentLoadW)
+        netDemandW = max(0, currentLoadW - solarGenerationW)
+
+        totalDemandW += currentLoadW
+        totalSolarW += solarGenerationW
+        totalExcessW += excessW
+
+        # Load shedding priority (higher load = higher priority to shed)
+        sheddingPriority = "HIGH" if currentLoadW > 1200 else "MEDIUM" if currentLoadW > 900 else "LOW"
+
+        homes.append({
+            "id": home["id"],
+            "name": home["name"],
+            "currentLoadW": currentLoadW,
+            "solarCapacityKw": home["solarKw"],
+            "solarGenerationW": solarGenerationW,
+            "excessSolarW": excessW,
+            "netDemandW": netDemandW,
+            "sheddingPriority": sheddingPriority,
+            "canShareSolar": excessW > 100,
+        })
+
+    # Peer-to-peer trading recommendations
+    sellers = [h for h in homes if h["canShareSolar"]]
+    buyers = [h for h in homes if h["netDemandW"] > 200 and not h["canShareSolar"]]
+    tradingRecs = []
+    for seller in sellers[:2]:
+        for buyer in buyers[:2]:
+            shareW = min(seller["excessSolarW"], buyer["netDemandW"], 500)
+            if shareW > 50:
+                tradingRecs.append({
+                    "fromHome": seller["name"],
+                    "toHome": buyer["name"],
+                    "shareWatts": shareW,
+                    "savingsRupees": round(shareW * 0.008),
+                    "message": f"{seller['name']} → {buyer['name']}: Share {shareW}W solar surplus"
+                })
+
+    # Cooperative load shedding schedule — shed HIGH priority homes first
+    sheddingSchedule = [
+        {"home": h["name"], "priority": h["sheddingPriority"], "recommendShed": h["sheddingPriority"] == "HIGH"}
+        for h in sorted(homes, key=lambda x: {"HIGH": 0, "MEDIUM": 1, "LOW": 2}[x["sheddingPriority"]])
+    ]
+
+    # Transformer load status
+    transformerLoadPct = round((totalDemandW / (len(homes) * 2000)) * 100)
+    transformerStatus = "CRITICAL" if transformerLoadPct > 85 else "HIGH" if transformerLoadPct > 70 else "NORMAL"
+
+    return {
+        "simulatedTime": simulatedTime,
+        "homes": homes,
+        "totals": {
+            "totalDemandW": totalDemandW,
+            "totalSolarW": totalSolarW,
+            "totalExcessSolarW": totalExcessW,
+            "netGridDemandW": max(0, totalDemandW - totalSolarW),
+        },
+        "transformerLoad": {
+            "percentageUsed": transformerLoadPct,
+            "status": transformerStatus,
+        },
+        "tradingRecommendations": tradingRecs,
+        "cooperativeSheddingSchedule": sheddingSchedule,
+    }
+
 class LoadSheddingScheduleRequest(BaseModel):
     date: str
     slots: list

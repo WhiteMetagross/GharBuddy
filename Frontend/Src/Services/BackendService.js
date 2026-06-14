@@ -161,6 +161,12 @@ export const BackendService = {
     return res.json();
   },
 
+  async getCommunityEnergy() {
+    const res = await fetch(`${baseUrl}/api/community/energy`);
+    if (!res.ok) throw new Error("Failed to fetch community energy data");
+    return res.json();
+  },
+
   async getCacheDiagnostics() {
     const res = await fetch(`${baseUrl}/api/cache/diagnostics`);
     if (!res.ok) throw new Error("Failed to fetch cache diagnostics");
