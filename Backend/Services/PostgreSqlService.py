@@ -204,9 +204,10 @@ class PostgreSqlService:
                         for rule in self.mockVectorIndex:
                             vec_str = json.dumps(rule["vector"])
                             if self.hasPgVector:
+                                vector_str = "[" + ",".join(map(str, rule["vector"])) + "]"
                                 cur.execute(
                                     "INSERT INTO VectorIndex (content, vector, category) VALUES (%s, %s, %s);",
-                                    (rule["content"], rule["vector"], rule["category"])
+                                    (rule["content"], vector_str, rule["category"])
                                 )
                             else:
                                 cur.execute(
