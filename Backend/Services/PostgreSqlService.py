@@ -27,6 +27,7 @@ class PostgreSqlService:
             "inverterBatteryCharge": 85
         }
         self.mockVectorIndex = []
+        self.mockEmbeddingCache = {}
         
         self.initializeDefaultRules()
         self.connectDb()
@@ -153,6 +154,11 @@ class PostgreSqlService:
                                 category VARCHAR(50)
                             );
                         """)
+                        try:
+                            cur.execute("CREATE INDEX IF NOT EXISTS vector_cosine_idx ON VectorIndex USING hnsw (vector vector_cosine_ops);")
+                            print("Postgres HNSW vector index verified.")
+                        except Exception as idx_err:
+                            print(f"Skipped HNSW index creation: {idx_err}. Using default scanning.")
                     else:
                         cur.execute("""
                             CREATE TABLE IF NOT EXISTS VectorIndex (
@@ -162,6 +168,15 @@ class PostgreSqlService:
                                 category VARCHAR(50)
                             );
                         """)
+                    
+                    # 5. EmbeddingCache Table
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS EmbeddingCache (
+                            textHash VARCHAR(64) PRIMARY KEY,
+                            inputText TEXT,
+                            embedding TEXT
+                        );
+                    """)
                     
                     # Seed initial rows if empty
                     # Seed Devices
@@ -203,6 +218,40 @@ class PostgreSqlService:
         except Exception as e:
             print(f"Error initializing SQL tables: {e}")
 
+    def getMockEmbedding(self, text):
+        vector = [0.02] * 1536
+        lowerText = text.lower()
+        keywords = {
+            "geyser": 5,
+            "toilet": 5,
+            "bathroom": 5,
+            "bath": 5,
+            "pooja": 15,
+            "prayer": 15,
+            "lights": 15,
+            "fasting": 25,
+            "cooker": 35,
+            "whistle": 35,
+            "kitchen": 35,
+            "motor": 45,
+            "water": 45,
+            "leak": 45,
+            "shedding": 55,
+            "inverter": 55,
+            "power": 55,
+            "cut": 55,
+            "study": 65,
+            "tuition": 65,
+            "bedtime": 75,
+            "sleep": 75,
+            "night": 75
+        }
+        for word, index in keywords.items():
+            if word in lowerText:
+                for i in range(index * 10, (index + 1) * 10):
+                    vector[i] = 1.0
+        return vector
+
     def initializeDefaultRules(self):
         defaultRules = [
             ("Bathroom motion detected during morning wake hours matches bath routine. Preheat geyser.", "routine"),
@@ -214,7 +263,7 @@ class PostgreSqlService:
             ("Late night bedtime patterns require shutting down TV and placing all appliances on standby.", "routine")
         ]
         for rule, cat in defaultRules:
-            mockVector = [0.1] * 1536
+            mockVector = self.getMockEmbedding(rule)
             self.mockVectorIndex.append({
                 "content": rule,
                 "vector": mockVector,
@@ -410,3 +459,41 @@ class PostgreSqlService:
             "vector": vector,
             "category": category
         })
+
+    def getEmbeddingFromCache(self, textHash):
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT embedding FROM EmbeddingCache WHERE textHash = %s;", (textHash,))
+                        row = cur.fetchone()
+                        if row:
+                            return json.loads(row[0])
+                except Exception as e:
+                    print(f"SQL Error in getEmbeddingFromCache: {e}")
+        return self.mockEmbeddingCache.get(textHash)
+
+    def insertEmbeddingIntoCache(self, textHash, inputText, embedding):
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO EmbeddingCache (textHash, inputText, embedding) VALUES (%s, %s, %s) ON CONFLICT (textHash) DO NOTHING;",
+                            (textHash, inputText, json.dumps(embedding))
+                        )
+                    return
+                except Exception as e:
+                    print(f"SQL Error in insertEmbeddingIntoCache: {e}")
+        self.mockEmbeddingCache[textHash] = embedding
+
+    def deleteVectorRule(self, content):
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM VectorIndex WHERE content = %s;", (content,))
+                    return
+                except Exception as e:
+                    print(f"SQL Error in deleteVectorRule: {e}")
+        self.mockVectorIndex = [r for r in self.mockVectorIndex if r["content"] != content]

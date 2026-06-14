@@ -199,7 +199,7 @@ def triggerSensor(req: SensorTriggerRequest):
 def handleActionOverride(req: ActionOverrideRequest):
     if not req.approve:
         rule = bedrockInstance.generatePreferenceRule(req.actionId, simulatedTime, powerStatus)
-        vectorStoreInstance.addRule(rule, "routine")
+        vectorStoreInstance.addRule(rule, "override")
         msg = f"प्राथमिकता सहेज ली गई है (Preference saved): '{rule}'. भविष्य में इसे ब्लॉक किया जाएगा।"
         twilioInstance.sendWhatsApp(msg)
         return {"status": "declined", "ruleGenerated": rule}
@@ -253,5 +253,13 @@ def getVectorRules():
     try:
         records = databaseInstance.pgService.getVectors()
         return [{"content": r["content"], "category": r["category"]} for r in records]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/vectors/consolidate")
+def consolidateVectorRules():
+    try:
+        count = vectorStoreInstance.consolidateRules(bedrockInstance)
+        return {"status": "success", "consolidatedCount": count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

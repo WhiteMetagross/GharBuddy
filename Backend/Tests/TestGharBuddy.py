@@ -80,5 +80,88 @@ class TestGharBuddy(unittest.TestCase):
         self.assertEqual(len(updated_rules), initial_count + 1)
         self.assertIn("geyser", updated_rules[-1]["content"].lower())
 
+    def testEmbeddingCache(self):
+        from Backend.Services.VectorStoreService import VectorStoreService
+        db = DatabaseService()
+        vstore = VectorStoreService(db.pgService)
+        
+        # Reset mock cache
+        db.pgService.mockEmbeddingCache = {}
+        
+        # Query first time (MISS)
+        v1 = vstore.getEmbedding("Pooja meditation room setup")
+        # Query second time (HIT)
+        v2 = vstore.getEmbedding("Pooja meditation room setup")
+        
+        self.assertEqual(v1, v2)
+        self.assertGreater(len(db.pgService.mockEmbeddingCache), 0)
+
+    def testOverrideConflictResolution(self):
+        from Backend.Services.BedrockService import BedrockService
+        from Backend.Services.VectorStoreService import VectorStoreService
+        db = DatabaseService()
+        vstore = VectorStoreService(db.pgService)
+        bedrock = BedrockService()
+        
+        # Insert user override rule
+        vstore.addRule("Do not automatically start the water pump motor at 07:15:00 under GRID conditions.", "override")
+        
+        # Build situation context matching prediction and override trigger
+        context = {
+            "currentTime": "07:15:00",
+            "currentDate": "06-13",
+            "calendarContext": {
+                "isFastingDay": False,
+                "festivalName": "Normal Day",
+                "poojaDuration": 20
+            },
+            "powerGridStatus": "GRID",
+            "recentSensorEvents": [{"sensorId": "waterLevelLow", "value": "active"}],
+            "predictedActionDetails": {
+                "predictedAction": "startWaterMotor",
+                "targetDevice": "waterMotor",
+                "deviceCommand": "ON",
+                "confidence": 0.82,
+                "reason": "Scheduled motor window reached and low water level detected."
+            },
+            # Retrieved similarity rules containing the matching override rule
+            "ragContext": [
+                {
+                    "content": "Do not automatically start the water pump motor at 07:15:00 under GRID conditions.",
+                    "category": "override",
+                    "similarity": 0.95
+                }
+            ]
+        }
+        
+        # Generate reasoning
+        decision = bedrock.generateReasoning(context)
+        
+        # Action MUST be suppressed!
+        self.assertFalse(decision["shouldExecute"])
+        self.assertFalse(decision["shouldSuggest"])
+        self.assertIn("suppressed", decision["actionId"])
+
+    def testRuleConsolidation(self):
+        from Backend.Services.BedrockService import BedrockService
+        from Backend.Services.VectorStoreService import VectorStoreService
+        db = DatabaseService()
+        vstore = VectorStoreService(db.pgService)
+        bedrock = BedrockService()
+        
+        # Setup mock db rules
+        initial_rules = len(db.pgService.getVectors())
+        
+        # Add two highly similar/redundant rules
+        vstore.addRule("Do not automatically start the water pump motor at 07:15:00 on weekdays.", "override")
+        vstore.addRule("Do not automatically start the water pump motor at 07:15:00 on weekends.", "override")
+        
+        # Trigger consolidation
+        count = vstore.consolidateRules(bedrock)
+        
+        # Check that at least one consolidation occurred
+        self.assertGreaterEqual(count, 1)
+        self.assertEqual(len(db.pgService.getVectors()), initial_rules + 1)
+
 if __name__ == "__main__":
     unittest.main()

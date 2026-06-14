@@ -22,24 +22,41 @@ class VectorStoreService:
 
     def getEmbedding(self, text):
         """
-        Generates text embedding using Bedrock (Titan) or a deterministic local proxy generator.
+        Generates text embedding using Bedrock (Titan) or a deterministic local proxy generator,
+        utilizing a SQL/mock caching layer to prevent duplicate API invocations.
         """
+        import hashlib
+        textHash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        
+        cached = self.db.getEmbeddingFromCache(textHash)
+        if cached is not None:
+            print(f"[Cache Log] HIT for embedding text: '{text[:30]}...'")
+            return cached
+            
+        print(f"[Cache Log] MISS for embedding text: '{text[:30]}...'")
+        
+        embedding = None
         if AppConfig.mockMode or not self.bedrockClient:
-            return self.getMockEmbedding(text)
+            embedding = self.getMockEmbedding(text)
+        else:
+            try:
+                body = json.dumps({
+                    "inputText": text
+                })
+                response = self.bedrockClient.invoke_model(
+                    modelId="amazon.titan-embed-text-v1",
+                    body=body
+                )
+                responseBody = json.loads(response.get("body").read())
+                embedding = responseBody.get("embedding")
+            except Exception as e:
+                print(f"Error querying Bedrock Titan Embeddings: {e}. Falling back to mock embeddings.")
+                embedding = self.getMockEmbedding(text)
 
-        try:
-            body = json.dumps({
-                "inputText": text
-            })
-            response = self.bedrockClient.invoke_model(
-                modelId="amazon.titan-embed-text-v1",
-                body=body
-            )
-            responseBody = json.loads(response.get("body").read())
-            return responseBody.get("embedding")
-        except Exception as e:
-            print(f"Error querying Bedrock Titan Embeddings: {e}. Falling back to mock embeddings.")
-            return self.getMockEmbedding(text)
+        if embedding is not None:
+            self.db.insertEmbeddingIntoCache(textHash, text, embedding)
+            
+        return embedding
 
     def getMockEmbedding(self, text):
         """
@@ -147,4 +164,63 @@ class VectorStoreService:
         if not magnitude1 or not magnitude2:
             return 0.0
         return dotProduct / (magnitude1 * magnitude2)
+
+    def consolidateRules(self, bedrockService):
+        """
+        Scans all rules in the vector store, clusters redundant ones with similarity >= 0.85,
+        and uses Bedrock to consolidate them.
+        """
+        records = self.db.getVectors()
+        if len(records) < 2:
+            return 0
+
+        consolidated_count = 0
+        skip_indices = set()
+
+        for i in range(len(records)):
+            if i in skip_indices:
+                continue
+            r1 = records[i]
+            v1 = r1["vector"]
+            rule1_text = r1["content"]
+            category1 = r1["category"]
+
+            for j in range(i + 1, len(records)):
+                if j in skip_indices:
+                    continue
+                r2 = records[j]
+                v2 = r2["vector"]
+                rule2_text = r2["content"]
+                category2 = r2["category"]
+
+                # Only consolidate rules within the same category
+                if category1 != category2:
+                    continue
+
+                similarity = self.calculateCosineSimilarity(v1, v2)
+                # For mock embedding vectors we might have similar stubs. We use 0.85 for real embeddings.
+                # In mock mode, keywords match exact segments.
+                if similarity >= 0.85:
+                    print(f"[Consolidation Log] Highly similar rules detected (Similarity: {similarity:.2f}):")
+                    print(f"  1) '{rule1_text}'")
+                    print(f"  2) '{rule2_text}'")
+
+                    # Invoke Bedrock to merge the rules
+                    new_rule = bedrockService.generateConsolidatedRule(rule1_text, rule2_text)
+                    print(f"  Consolidated Output: '{new_rule}'")
+
+                    # Delete original rules from DB
+                    self.db.deleteVectorRule(rule1_text)
+                    self.db.deleteVectorRule(rule2_text)
+
+                    # Insert the new consolidated rule
+                    self.addRule(new_rule, category1)
+
+                    # Mark indices to skip
+                    skip_indices.add(i)
+                    skip_indices.add(j)
+                    consolidated_count += 1
+                    break
+
+        return consolidated_count
 

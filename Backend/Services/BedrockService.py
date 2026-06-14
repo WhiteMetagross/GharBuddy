@@ -37,6 +37,7 @@ class BedrockService:
             "You receive a situation context containing active sensor states, regional calendar details, "
             "and routine prediction heuristics. "
             "Crucially, you are also provided with semantically retrieved RAG rules (user overrides, safety parameters, or cultural laws). "
+            "If any retrieved RAG rule has the category '[OVERRIDE]' (which represents explicit user preference rules and blocks, e.g. 'Do not automatically start the water pump motor' or 'Never turn on Geyser'), you MUST respect this constraint. In such cases, you must suppress the action by setting shouldExecute to false and shouldSuggest to false. Explain this suppression in explanationHindi and explanationEnglish. "
             "You must reason over this context and output a structured JSON action decision. "
             "You must respond with ONLY a valid JSON object. No extra text, no wrapper markdown."
         )
@@ -129,7 +130,28 @@ class BedrockService:
         # RAG feedback logs matching
         ragSummaries = [r.get("content") for r in ragContext]
 
-        # Check for overrides inside RAG rules
+        # Check for matching overrides generically
+        for r in ragContext:
+            content = r.get("content", "")
+            cat = r.get("category", "")
+            if cat == "override":
+                content_lower = content.lower()
+                if ("geyser" in content_lower and action == "turnOnGeyser") or \
+                   (("water pump motor" in content_lower or "water motor" in content_lower or "pump" in content_lower) and action == "startWaterMotor") or \
+                   ("inverter" in content_lower and action == "prechargeInverter"):
+                    return {
+                        "shouldExecute": False,
+                        "shouldSuggest": False,
+                        "actionId": f"suppressed_{action}",
+                        "targetDevice": device,
+                        "deviceCommand": "OFF" if action != "prechargeInverter" else "STANDBY",
+                        "explanationEnglish": f"Action suppressed due to RAG-retrieved user override rule: '{content}'.",
+                        "explanationHindi": f"उपयोगकर्ता की प्राथमिकता नियम '{content}' के कारण कार्रवाई रोक दी गई है।",
+                        "estimatedSavingsWh": 0,
+                        "retrievedRagRules": ragContext
+                    }
+
+        # Specific safety guardrail mock check
         overrideDetected = False
         for rule in ragSummaries:
             if "Never turn on Geyser" in rule or "Never start a geyser" in rule:
@@ -239,3 +261,42 @@ class BedrockService:
         except Exception as e:
             print(f"Error generating preference rule via Bedrock: {e}")
             return f"Never automatically trigger {actionId} at {currentTime} under {powerStatus}."
+
+    def generateConsolidatedRule(self, rule1, rule2):
+        if AppConfig.mockMode or not self.client:
+            # Deterministic consolidation logic for offline/mock runs
+            if "water pump motor" in rule1.lower() and "water pump motor" in rule2.lower():
+                return "Do not automatically start the water pump motor under GRID or INVERTER conditions."
+            if "geyser" in rule1.lower() and "geyser" in rule2.lower():
+                return "Do not automatically preheat the bath geyser at critical time windows."
+            return f"Consolidated Preference: {rule1} / {rule2}"
+
+        prompt = (
+            f"You are GharBuddy's cognitive rules optimizer. Consolidate the following two redundant or "
+            f"highly overlapping smart home preference rules into a single clear, cohesive preference rule:\n"
+            f"1) '{rule1}'\n"
+            f"2) '{rule2}'\n"
+            f"Respond with ONLY the single consolidated rule text and nothing else. No explanation, no quotes."
+        )
+        
+        try:
+            body = json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 150,
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.1
+            })
+            response = self.client.invoke_model(
+                modelId=AppConfig.bedrockModelId,
+                body=body
+            )
+            responseBody = json.loads(response.get("body").read())
+            consolidatedText = responseBody["content"][0]["text"].strip()
+            if consolidatedText.startswith('"') and consolidatedText.endswith('"'):
+                consolidatedText = consolidatedText[1:-1]
+            return consolidatedText
+        except Exception as e:
+            print(f"Error consolidating rules via Bedrock: {e}")
+            return f"Consolidated: {rule1} and {rule2}"
