@@ -63,6 +63,10 @@ class PostgreSqlService:
         self.mockVectorIndex = []
         self.mockEmbeddingCache = {}
 
+        # Registered users — populated via /api/auth/register; mirrored to AuthService.REGISTERED_USERS.
+        # Format: {"username": {"password_hash", "salt", "role", "created_at"}}
+        self.mockUsers: dict = {}
+
         # Issue #20 — embedding cache diagnostics counters
         self._cacheHits = 0
         self._cacheMisses = 0
@@ -309,6 +313,17 @@ class PostgreSqlService:
                             textHash VARCHAR(64) PRIMARY KEY,
                             inputText TEXT,
                             embedding TEXT
+                        );
+                    """)
+
+                    # 6. Users Table — proper auth flow (PBKDF2 hashed)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS Users (
+                            username VARCHAR(32) PRIMARY KEY,
+                            password_hash TEXT NOT NULL,
+                            salt TEXT NOT NULL,
+                            role VARCHAR(20) NOT NULL DEFAULT 'family',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         );
                     """)
                     
@@ -841,3 +856,91 @@ class PostgreSqlService:
                 "recommendation": "PRECHARGE_INVERTER" if best["probability"] >= 0.70 else "MONITOR"
             }
         return {"predictedCut": False, "probability": 0.0}
+
+    # ------------------------------------------------------------------
+    # Users table (proper auth flow)
+    # ------------------------------------------------------------------
+
+    def insertUser(self, username: str, passwordHash: str, salt: str, role: str, createdAt: str) -> bool:
+        """Insert a new user. Returns True on success, False on duplicate."""
+        print(f"[SQL Log] INSERT INTO Users (username, role) VALUES ('{username}', '{role}');")
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO Users (username, password_hash, salt, role, created_at)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (username) DO NOTHING;
+                            """,
+                            (username, passwordHash, salt, role, createdAt),
+                        )
+                        conn.commit()
+                        return cur.rowcount > 0
+                except Exception as e:
+                    print(f"SQL Error in insertUser: {e}. Falling back to mock store.")
+
+        if username in self.mockUsers:
+            return False
+        self.mockUsers[username] = {
+            "password_hash": passwordHash,
+            "salt": salt,
+            "role": role,
+            "created_at": createdAt,
+        }
+        return True
+
+    def getUsers(self) -> list:
+        """Return all registered users (excluding hard-coded DEMO_USERS)."""
+        print("[SQL Log] SELECT username, password_hash, salt, role, created_at FROM Users;")
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT username, password_hash, salt, role, created_at FROM Users;"
+                        )
+                        rows = cur.fetchall()
+                        return [
+                            {
+                                "username": r[0],
+                                "password_hash": r[1],
+                                "salt": r[2],
+                                "role": r[3],
+                                "created_at": str(r[4]) if r[4] is not None else "",
+                            }
+                            for r in rows
+                        ]
+                except Exception as e:
+                    print(f"SQL Error in getUsers: {e}. Falling back to mock store.")
+        return [
+            {"username": uname, **rec} for uname, rec in self.mockUsers.items()
+        ]
+
+    def getUserByUsername(self, username: str) -> dict | None:
+        """Lookup a single user. Returns dict with hash/salt/role or None."""
+        with self.get_db_connection() as conn:
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT username, password_hash, salt, role, created_at FROM Users WHERE username = %s;",
+                            (username,),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            return {
+                                "username": row[0],
+                                "password_hash": row[1],
+                                "salt": row[2],
+                                "role": row[3],
+                                "created_at": str(row[4]) if row[4] is not None else "",
+                            }
+                        return None
+                except Exception as e:
+                    print(f"SQL Error in getUserByUsername: {e}")
+        rec = self.mockUsers.get(username)
+        if rec is None:
+            return None
+        return {"username": username, **rec}

@@ -6,7 +6,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
-from Backend.Services.AuthService import authenticate, createAccessToken, verifyToken, verifyTokenFull, loginUser, ACCESS_TOKEN_EXPIRE_MINUTES
+from Backend.Services.AuthService import (
+    authenticate,
+    createAccessToken,
+    verifyToken,
+    verifyTokenFull,
+    loginUser,
+    registerUser,
+    loadRegisteredUsers,
+    RegistrationError,
+    REGISTERED_USERS,
+    DEMO_USERS,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+)
 import asyncio
 import json as _json
 import tempfile
@@ -234,10 +246,14 @@ def executeAction(decision):
 def getMe(user: str = Depends(requireAuth)):
     """Issue #6 — Return the authenticated user's info."""
     role = None
-    from Backend.Services.AuthService import DEMO_USERS
-    user_entry = DEMO_USERS.get(user)
-    if user_entry:
-        role = user_entry.get("role")
+    # Registered users (real signup) take precedence
+    reg = REGISTERED_USERS.get(user)
+    if reg:
+        role = reg.get("role")
+    else:
+        user_entry = DEMO_USERS.get(user)
+        if user_entry:
+            role = user_entry.get("role")
     return {"username": user, "role": role or "member"}
 
 @app.post("/api/sensors/trigger")
@@ -362,6 +378,51 @@ def handleActionOverride(req: ActionOverrideRequest, background_tasks: Backgroun
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "family"
+
+
+@app.on_event("startup")
+def _hydrateUsersOnStartup():
+    """Pull any persisted users into the in-memory store on boot."""
+    try:
+        loaded = loadRegisteredUsers(databaseInstance.pgService)
+        if loaded:
+            print(f"[Auth] Loaded {loaded} registered user(s) from database.")
+    except Exception as e:
+        print(f"[Auth] Skipped user hydration: {e}")
+
+
+@app.post("/api/auth/register", status_code=201)
+def register(req: RegisterRequest):
+    """
+    Create a new account with PBKDF2-hashed password and return a session token.
+    Roles: parent, child, family.
+    """
+    try:
+        result = registerUser(
+            req.username,
+            req.password,
+            req.role,
+            pgService=databaseInstance.pgService,
+        )
+    except RegistrationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "access_token": result["token"],
+        "token": result["token"],
+        "token_type": "bearer",
+        "username": result["username"],
+        "role": result["role"],
+        "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES,
+        "expiresIn": result["expiresIn"],
+        "message": "Account created successfully.",
+    }
+
 
 @app.post("/api/auth/login")
 def login(req: LoginRequest):

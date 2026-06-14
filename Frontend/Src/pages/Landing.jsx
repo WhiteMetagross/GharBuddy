@@ -33,9 +33,22 @@ export default function Landing() {
           <div className="brandMark" style={{ width: "38px", height: "38px" }}>🪔</div>
           <span className="gradientText" style={{ fontSize: "19px", fontWeight: 800, letterSpacing: "-0.4px" }}>GharBuddy</span>
         </div>
-        <button className="btn btnPrimary" onClick={() => navigate("/login")}>
-          Sign In <IconArrowRight width="14" height="14" />
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <button
+            className="btn"
+            onClick={() => navigate("/login")}
+            style={{ padding: "9px 16px", fontSize: "13.5px" }}
+          >
+            Sign In
+          </button>
+          <button
+            className="btn btnPrimary"
+            onClick={() => navigate("/login?mode=signup")}
+            style={{ padding: "9px 18px", fontSize: "13.5px" }}
+          >
+            Get Started <IconArrowRight width="14" height="14" />
+          </button>
+        </div>
       </nav>
 
       {/* Hero */}
@@ -50,11 +63,14 @@ export default function Landing() {
             cooker whistles and joint-family routines — into one calm, beautiful control center.
           </p>
           <div className="heroCtas">
-            <button className="btn btnPrimary" style={{ padding: "12px 22px", fontSize: "14px" }} onClick={() => navigate("/login")}>
-              Enter Dashboard <IconArrowRight width="15" height="15" />
+            <button className="btn btnPrimary" style={{ padding: "12px 22px", fontSize: "14px" }} onClick={() => navigate("/login?mode=signup")}>
+              Get Started <IconArrowRight width="15" height="15" />
             </button>
-            <a className="btn" style={{ padding: "12px 22px", fontSize: "14px" }} href="#features">
-              Explore Features
+            <button className="btn" style={{ padding: "12px 22px", fontSize: "14px" }} onClick={() => navigate("/login")}>
+              Sign In
+            </button>
+            <a className="btn btnGhost" style={{ padding: "12px 18px", fontSize: "13px" }} href="#features">
+              Explore features
             </a>
           </div>
           <div className="heroStats">
@@ -129,11 +145,16 @@ export default function Landing() {
             Step inside your smarter ghar
           </h2>
           <p style={{ color: "var(--textSecondary)", maxWidth: "480px", margin: "0 auto 28px", fontSize: "15px" }}>
-            Open the live dashboard and watch GharBuddy reason about your home in real time.
+            Create an account and watch GharBuddy reason about your home in real time.
           </p>
-          <button className="btn btnPrimary" style={{ padding: "13px 26px", fontSize: "15px" }} onClick={() => navigate("/login")}>
-            Launch GharBuddy <IconArrowRight width="16" height="16" />
-          </button>
+          <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap" }}>
+            <button className="btn btnPrimary" style={{ padding: "13px 26px", fontSize: "15px" }} onClick={() => navigate("/login?mode=signup")}>
+              Create your account <IconArrowRight width="16" height="16" />
+            </button>
+            <button className="btn" style={{ padding: "13px 22px", fontSize: "14px" }} onClick={() => navigate("/login")}>
+              Sign in
+            </button>
+          </div>
         </motion.div>
       </section>
 
