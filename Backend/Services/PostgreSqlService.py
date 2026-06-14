@@ -441,9 +441,10 @@ class PostgreSqlService:
                 try:
                     with conn.cursor() as cur:
                         if self.hasPgVector:
+                            vector_str = "[" + ",".join(map(str, vector)) + "]"
                             cur.execute(
                                 "INSERT INTO VectorIndex (content, vector, category) VALUES (%s, %s, %s);",
-                                (content, vector, category)
+                                (content, vector_str, category)
                             )
                         else:
                             cur.execute(
