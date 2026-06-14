@@ -106,20 +106,9 @@ class PostgreSqlService:
             yield None
             return
 
-        # Patch conn.cursor to return slow-query-measuring cursors transparently
-        original_cursor = conn.cursor
-        def slow_cursor(*args, **kwargs):
-            return _SlowQueryCursor(original_cursor(*args, **kwargs))
-        conn.cursor = slow_cursor
-
         try:
             yield conn
         finally:
-            # Restore original cursor method before returning connection to pool
-            try:
-                conn.cursor = original_cursor
-            except Exception:
-                pass
             try:
                 self.pool.putconn(conn)
             except Exception:

@@ -531,7 +531,10 @@ async def transcribeVoice(audio: UploadFile = File(...)):
             with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
                 tmp.write(audio_bytes)
                 tmp_path = tmp.name
-            result = model.transcribe(tmp_path, language="hi", task="transcribe")
+            
+            # Use an initial prompt to give the model context about expected words
+            expected_commands = "geyser on, batti off, pooja mode, motor band, padhai mode, so jao, tv on, ac off"
+            result = model.transcribe(tmp_path, initial_prompt=expected_commands)
             transcript = result.get("text", "").strip()
             _os.unlink(tmp_path)
         except Exception as e:
