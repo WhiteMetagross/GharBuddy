@@ -67,18 +67,16 @@ export default function EnergyTracker({ energyStats }) {
 
   return (
     <div className="glassCard" style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-      <div className="cardHeader">
-        <CardTitle
-          icon={IconBarChart}
-          iconColor="var(--colorSuccess)"
-          title="Energy & Cost Tracker"
-          badge={
-            <span className="statusBadge" style={{ background: "rgba(34,197,94,0.08)", color: "var(--colorSuccess)", borderColor: "rgba(34,197,94,0.18)", fontSize: "10px" }}>
-              Live DISCOM
-            </span>
-          }
-        />
-      </div>
+      <CardTitle
+        icon={IconBarChart}
+        iconColor="var(--colorSuccess)"
+        title="Energy & Cost Tracker"
+        badge={
+          <span className="statusBadge" style={{ background: "rgba(34,197,94,0.08)", color: "var(--colorSuccess)", borderColor: "rgba(34,197,94,0.18)", fontSize: "10px" }}>
+            Live DISCOM
+          </span>
+        }
+      />
 
       {/* Load Shedding Risk Badge */}
       {badge && (
@@ -89,14 +87,16 @@ export default function EnergyTracker({ energyStats }) {
           background: badge.bg,
           border: badge.border,
           borderRadius: "12px",
-          padding: "12px 16px"
+          padding: "12px 16px",
+          flexWrap: "wrap",
+          minWidth: 0,
         }}>
-          <span style={{ fontSize: "22px" }}>{badge.emoji}</span>
-          <div style={{ flex: 1 }}>
+          <span style={{ fontSize: "22px", flexShrink: 0 }}>{badge.emoji}</span>
+          <div style={{ flex: "1 1 200px", minWidth: 0 }}>
             <div style={{ fontSize: "13px", fontWeight: "700", color: badge.color }}>
               Load Shedding: {badge.label}
             </div>
-            <div style={{ fontSize: "11px", color: "var(--textSecondary)", marginTop: "2px" }}>
+            <div style={{ fontSize: "11px", color: "var(--textSecondary)", marginTop: "2px", lineHeight: 1.5 }}>
               {badge.subLabel}
               {loadRisk?.nextCutStart != null && (
                 <span> · Next cut at {loadRisk.nextCutStart}:00</span>
@@ -106,14 +106,14 @@ export default function EnergyTracker({ energyStats }) {
               )}
             </div>
           </div>
-          <span style={{ fontSize: "10px", color: "var(--textMuted)", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: "10px", color: "var(--textMuted)", whiteSpace: "nowrap", flexShrink: 0 }}>
             Live · 5s
           </span>
         </div>
       )}
 
       {/* Grid of Key Metrics */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "16px" }}>
         {/* Metric 1 */}
         <div style={{ background: "rgba(255,255,255,0.02)", padding: "16px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.04)" }}>
           <span style={{ fontSize: "11px", color: "var(--textSecondary)", textTransform: "uppercase", fontWeight: "600" }}>
@@ -138,9 +138,9 @@ export default function EnergyTracker({ energyStats }) {
       </div>
 
       {/* Inverter Battery Charge Level Indicator */}
-      <div style={{ display: "flex", gap: "16px", alignItems: "center", background: "rgba(255,255,255,0.02)", padding: "16px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.04)" }}>
+      <div style={{ display: "flex", gap: "16px", alignItems: "center", background: "rgba(255,255,255,0.02)", padding: "16px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.04)", minWidth: 0 }}>
         {/* SVG Battery Block */}
-        <div style={{ position: "relative", width: "42px", height: "74px", border: "3px solid var(--borderStrong)", borderRadius: "6px", padding: "2px" }}>
+        <div style={{ position: "relative", width: "42px", height: "74px", border: "3px solid var(--borderStrong)", borderRadius: "6px", padding: "2px", flexShrink: 0 }}>
           {/* Battery Cap */}
           <div style={{ position: "absolute", top: "-8px", left: "11px", width: "14px", height: "6px", background: "var(--textMuted)", borderRadius: "2px 2px 0 0" }}></div>
           {/* Inner Fill level */}
@@ -160,14 +160,14 @@ export default function EnergyTracker({ energyStats }) {
           ></div>
         </div>
 
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <span style={{ fontSize: "11px", color: "var(--textSecondary)", textTransform: "uppercase", fontWeight: "600", display: "block" }}>
             Inverter Backup Status
           </span>
           <div style={{ fontSize: "20px", fontWeight: "700", color: "var(--textPrimary)", marginTop: "4px" }}>
             {inverterBatteryCharge}% Charged
           </div>
-          <p style={{ fontSize: "12px", color: "var(--textMuted)", marginTop: "2px" }}>
+          <p style={{ fontSize: "12px", color: "var(--textMuted)", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {inverterBatteryCharge === 100 ? "Full capacity - peak load ready" : "Pre-charging backup storage"}
           </p>
         </div>
@@ -181,9 +181,9 @@ export default function EnergyTracker({ energyStats }) {
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
           {/* Row 1 */}
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "4px" }}>
-              <span style={{ color: "var(--textSecondary)" }}>🛁 Geyser Idle Shutoff</span>
-              <span style={{ color: "var(--colorSuccess)", fontWeight: "700" }}>300 Wh</span>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", fontSize: "11px", marginBottom: "4px" }}>
+              <span style={{ color: "var(--textSecondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>🛁 Geyser Idle Shutoff</span>
+              <span style={{ color: "var(--colorSuccess)", fontWeight: "700", flexShrink: 0 }}>300 Wh</span>
             </div>
             <div style={{ height: "6px", background: "rgba(255,255,255,0.05)", borderRadius: "4px" }}>
               <div style={{ height: "100%", width: "45%", background: "var(--colorSuccess)", borderRadius: "4px" }}></div>
@@ -191,9 +191,9 @@ export default function EnergyTracker({ energyStats }) {
           </div>
           {/* Row 2 */}
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "4px" }}>
-              <span style={{ color: "var(--textSecondary)" }}>⛲ Motor Overflow Prevent</span>
-              <span style={{ color: "var(--colorSuccess)", fontWeight: "700" }}>500 Wh</span>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", fontSize: "11px", marginBottom: "4px" }}>
+              <span style={{ color: "var(--textSecondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>⛲ Motor Overflow Prevent</span>
+              <span style={{ color: "var(--colorSuccess)", fontWeight: "700", flexShrink: 0 }}>500 Wh</span>
             </div>
             <div style={{ height: "6px", background: "rgba(255,255,255,0.05)", borderRadius: "4px" }}>
               <div style={{ height: "100%", width: "75%", background: "var(--colorSuccess)", borderRadius: "4px" }}></div>
@@ -201,9 +201,9 @@ export default function EnergyTracker({ energyStats }) {
           </div>
           {/* Row 3 */}
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "4px" }}>
-              <span style={{ color: "var(--textSecondary)" }}>🔋 Power-Cut Pre-charge Shedding</span>
-              <span style={{ color: "var(--colorSuccess)", fontWeight: "700" }}>600 Wh</span>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", fontSize: "11px", marginBottom: "4px" }}>
+              <span style={{ color: "var(--textSecondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>🔋 Power-Cut Pre-charge</span>
+              <span style={{ color: "var(--colorSuccess)", fontWeight: "700", flexShrink: 0 }}>600 Wh</span>
             </div>
             <div style={{ height: "6px", background: "rgba(255,255,255,0.05)", borderRadius: "4px" }}>
               <div style={{ height: "100%", width: "90%", background: "var(--colorSuccess)", borderRadius: "4px" }}></div>

@@ -27,11 +27,11 @@ export default function SensorSimulator({ systemState, onStateChange }) {
   };
 
   const timePresets = [
-    { label: "06:05 AM (Morning wake)", val: "06:05:00" },
-    { label: "06:30 AM (Pooja time)", val: "06:30:00" },
-    { label: "07:15 AM (Water/Cooker)", val: "07:15:00" },
-    { label: "06:15 PM (Power cuts/Tuition)", val: "18:15:00" },
-    { label: "10:30 PM (Sleep time)", val: "22:30:00" }
+    { label: "06:05 · Wake", val: "06:05:00" },
+    { label: "06:30 · Pooja", val: "06:30:00" },
+    { label: "07:15 · Cooker", val: "07:15:00" },
+    { label: "18:15 · Power cuts", val: "18:15:00" },
+    { label: "22:30 · Sleep", val: "22:30:00" }
   ];
 
   return (
@@ -44,7 +44,7 @@ export default function SensorSimulator({ systemState, onStateChange }) {
       />
 
       {/* Simulated Time & Date Settings */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "12px" }}>
         <div>
           <label style={{ display: "block", fontSize: "12px", color: "var(--textSecondary)", marginBottom: "4px" }}>
             Simulated Clock Time
@@ -117,7 +117,7 @@ export default function SensorSimulator({ systemState, onStateChange }) {
       </div>
 
       {/* Power status and cooker configurations */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: "12px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "12px", borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: "12px" }}>
         <div>
           <label style={{ display: "block", fontSize: "12px", color: "var(--textSecondary)", marginBottom: "4px" }}>
             Power Grid Status
@@ -170,18 +170,18 @@ export default function SensorSimulator({ systemState, onStateChange }) {
           Simulated IoT Sensor Events (Click to Fire):
         </span>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-          <button onClick={() => triggerSensor("toiletFlush", "active")} className="btn">
-            🚽 Toilet Flush Event
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: "10px" }}>
+          <button onClick={() => triggerSensor("toiletFlush", "active")} className="btn" title="Toilet Flush Event">
+            🚽 Toilet Flush
           </button>
-          <button onClick={() => triggerSensor("bathroomMotion", "active")} className="btn">
+          <button onClick={() => triggerSensor("bathroomMotion", "active")} className="btn" title="Bathroom Motion">
             🚶 Bathroom Motion
           </button>
-          <button onClick={() => triggerSensor("poojaRoomMotion", "active")} className="btn">
-            🪔 Pooja Room Motion
+          <button onClick={() => triggerSensor("poojaRoomMotion", "active")} className="btn" title="Pooja Room Motion">
+            🪔 Pooja Motion
           </button>
-          <button onClick={() => triggerSensor("cookerWhistle", "active")} className="btn" style={{ position: "relative" }}>
-            💨 Cooker Whistle {systemState.whistleCount > 0 && (
+          <button onClick={() => triggerSensor("cookerWhistle", "active")} className="btn" style={{ position: "relative" }} title="Cooker Whistle">
+            💨 Cooker Whistle{systemState.whistleCount > 0 && (
               <span style={{
                 position: "absolute",
                 top: "-6px",
@@ -201,23 +201,28 @@ export default function SensorSimulator({ systemState, onStateChange }) {
               </span>
             )}
           </button>
-          <button onClick={() => triggerSensor("waterLevelLow", "active")} className="btn">
-            🚰 Water Level Low
+          <button onClick={() => triggerSensor("waterLevelLow", "active")} className="btn" title="Water Level Low">
+            🚰 Water Low
           </button>
-          <button onClick={() => triggerSensor("waterMotorRunningLong", "active")} className="btn" style={{ color: "var(--colorDanger)", borderColor: "rgba(236,112,99,0.3)" }}>
-            ⚠️ Motor Leak Risk Event
+          <button
+            onClick={() => triggerSensor("waterMotorRunningLong", "active")}
+            className="btn"
+            title="Motor Leak Risk Event"
+            style={{ color: "var(--colorDanger)", borderColor: "rgba(236,112,99,0.3)" }}
+          >
+            ⚠️ Motor Leak Risk
           </button>
-          <button onClick={() => triggerSensor("powerCutRiskHigh", "active")} className="btn">
-            ⚡ loadShedding Predicted (85%)
+          <button onClick={() => triggerSensor("powerCutRiskHigh", "active")} className="btn" title="Load Shedding Predicted (85%)">
+            ⚡ Cut Risk · 85%
           </button>
-          <button onClick={() => triggerSensor("childrenStudyMotion", "active")} className="btn">
-            📚 Study Room Motion
+          <button onClick={() => triggerSensor("childrenStudyMotion", "active")} className="btn" title="Study Room Motion">
+            📚 Study Motion
           </button>
-          <button onClick={() => triggerSensor("bedroomMotion", "active")} className="btn">
+          <button onClick={() => triggerSensor("bedroomMotion", "active")} className="btn" title="Bedroom Motion">
             🛏️ Bedroom Motion
           </button>
-          <button onClick={() => triggerSensor("lateNightQuiet", "active")} className="btn">
-            🌙 Wind Down Silent Trigger
+          <button onClick={() => triggerSensor("lateNightQuiet", "active")} className="btn" title="Wind Down Silent Trigger">
+            🌙 Wind Down
           </button>
         </div>
       </div>

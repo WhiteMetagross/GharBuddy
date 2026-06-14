@@ -67,8 +67,23 @@ function DeviceNode({ deviceKey, device, x, y, isPulsing, roomColor, onToggle, r
   const icon = ICON_MAP[deviceKey] || "🔌";
 
   const isActive = safeDevice.status !== "OFF" && safeDevice.status !== "STANDBY";
-  const statusDisplay = safeDevice.status.replace(/_/g, " ");
+
+  // Compact status labels for the small SVG node — long enum names overflow the box otherwise
+  const statusLabelMap = {
+    DO_NOT_DISTURB: "Do Not Disturb",
+    NORMAL_CHARGE:  "Charging",
+    FAST_CHARGE:    "Fast Charge",
+    MEDITATION_DIMS: "Pooja Dim",
+    STUDY_FOCUS_BRIGHTNESS: "Focus",
+  };
+  const statusDisplay = statusLabelMap[safeDevice.status] || safeDevice.status.replace(/_/g, " ");
   const wattDisplay = safeDevice.wattage > 0 ? `${safeDevice.wattage}W` : "";
+
+  // Truncate device name + combined status to fit within ~73px text region of the 105px rect
+  const truncate = (s, max) => (s && s.length > max ? `${s.slice(0, max - 1)}…` : s || "");
+  const nameText = truncate(safeDevice.name, 13);
+  const statusLine = `${wattDisplay ? `${wattDisplay} · ` : ""}${statusDisplay}`;
+  const statusText = truncate(statusLine, 16);
 
   const handleClick = () => {
     if (readOnly) return;
@@ -125,11 +140,11 @@ function DeviceNode({ deviceKey, device, x, y, isPulsing, roomColor, onToggle, r
       <text x="8" y="27" fontSize="16" style={{ userSelect: "none" }}>{icon}</text>
 
       {/* Device name */}
-      <text x="30" y="18" fill="rgba(245,246,250,0.95)" fontSize="9" fontWeight="700">{safeDevice.name}</text>
+      <text x="30" y="18" fill="rgba(245,246,250,0.95)" fontSize="9" fontWeight="700">{nameText}</text>
 
       {/* Status + wattage */}
       <text x="30" y="31" fill={isActive ? stroke : "rgba(160,165,181,0.7)"} fontSize="7.5" fontWeight={isActive ? "600" : "400"}>
-        {wattDisplay ? `${wattDisplay} · ` : ""}{statusDisplay}
+        {statusText}
       </text>
 
       {/* AI pulse ring */}

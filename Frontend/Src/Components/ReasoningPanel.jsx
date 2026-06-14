@@ -89,7 +89,7 @@ export default function ReasoningPanel({ lastTriggerResult }) {
               fontFamily: "var(--fontFamily)"
             }}
           />
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
             <select
               value={newRuleCategory}
               onChange={(e) => setNewRuleCategory(e.target.value)}
@@ -99,18 +99,32 @@ export default function ReasoningPanel({ lastTriggerResult }) {
                 border: "1px solid rgba(255,255,255,0.08)",
                 borderRadius: "6px",
                 color: "var(--textPrimary)",
-                fontSize: "12px"
+                fontSize: "12px",
+                minWidth: 0,
+                flex: "0 1 auto",
               }}
             >
               <option value="routine">Routine Heuristics</option>
               <option value="cultural">Cultural Protocol</option>
               <option value="safety">Safety Constraint</option>
             </select>
-            <button type="submit" className="btn btnPrimary" style={{ fontSize: "12px", padding: "6px 12px" }}>
+            <button type="submit" className="btn btnPrimary" style={{ fontSize: "12px", padding: "6px 12px", flexShrink: 0 }}>
               💾 Embed & Store
             </button>
             {ruleStatus && (
-              <span style={{ fontSize: "11px", color: "var(--textSecondary)", fontStyle: "italic" }}>
+              <span
+                title={ruleStatus}
+                style={{
+                  fontSize: "11px",
+                  color: "var(--textSecondary)",
+                  fontStyle: "italic",
+                  minWidth: 0,
+                  flex: "1 1 100%",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
                 {ruleStatus}
               </span>
             )}
@@ -139,7 +153,14 @@ export default function ReasoningPanel({ lastTriggerResult }) {
               border: "1px solid rgba(255,255,255,0.03)"
             }}>
               {existingRules.map((r, idx) => (
-                <div key={idx} style={{ fontSize: "11px", color: "var(--textSecondary)", padding: "4px", borderBottom: "1px solid rgba(255,255,255,0.02)" }}>
+                <div key={idx} style={{
+                  fontSize: "11px",
+                  color: "var(--textSecondary)",
+                  padding: "4px",
+                  borderBottom: "1px solid rgba(255,255,255,0.02)",
+                  wordBreak: "break-word",
+                  lineHeight: 1.4,
+                }}>
                   <strong style={{ textTransform: "uppercase", color: r.category === 'cultural' ? '#c084fc' : r.category === 'safety' ? 'var(--colorDanger)' : 'var(--colorOrange)' }}>
                     [{r.category}]
                   </strong> {r.content}
@@ -166,8 +187,8 @@ export default function ReasoningPanel({ lastTriggerResult }) {
       />
 
       {/* Confidence Dial Display */}
-      <div style={{ display: "flex", gap: "20px", alignItems: "center", background: "rgba(255,255,255,0.02)", padding: "12px", borderRadius: "12px" }}>
-        <div style={{ position: "relative", width: "70px", height: "70px", display: "flex", alignItems: "center", justifyItems: "center", justifyContent: "center" }}>
+      <div style={{ display: "flex", gap: "20px", alignItems: "center", background: "rgba(255,255,255,0.02)", padding: "12px", borderRadius: "12px", flexWrap: "wrap", minWidth: 0 }}>
+        <div style={{ position: "relative", width: "70px", height: "70px", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
           <svg style={{ transform: "rotate(-90deg)", width: "70px", height: "70px" }}>
             <circle cx="35" cy="35" r="28" fill="transparent" stroke="rgba(255,255,255,0.05)" strokeWidth="6" />
             <circle
@@ -188,11 +209,20 @@ export default function ReasoningPanel({ lastTriggerResult }) {
           </span>
         </div>
 
-        <div style={{ flex: 1 }}>
-          <h3 style={{ fontSize: "15px", fontWeight: "600", color: "var(--textPrimary)" }}>
-            Confidence Level: {confidencePercent >= 85 ? "High (Auto-Execute)" : "Medium (User Confirm)"}
+        <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+          <h3 style={{
+            fontSize: "15px",
+            fontWeight: "600",
+            color: "var(--textPrimary)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+          }}>
+            Confidence: {confidencePercent >= 85 ? "High (Auto-Execute)" : "Medium (User Confirm)"}
           </h3>
-          <p style={{ fontSize: "12px", color: "var(--textSecondary)", marginTop: "2px" }}>
+          <p style={{ fontSize: "12px", color: "var(--textSecondary)", marginTop: "2px", lineHeight: 1.4 }}>
             Predictive Model matched sequence. Bedrock processed action approval rules.
           </p>
         </div>
@@ -300,13 +330,13 @@ export default function ReasoningPanel({ lastTriggerResult }) {
                     position: "relative"
                   }}>
                     {/* Header row */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                      <span style={{ fontSize: "10px", fontWeight: "800", color: accentColor, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "6px" }}>
+                      <span style={{ fontSize: "10px", fontWeight: "800", color: accentColor, textTransform: "uppercase", letterSpacing: "0.5px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
                         [{rule.category}]
-                        {didSuppress && <span style={{ marginLeft: "6px", color: "#ec7063" }}>⛔ SUPPRESSED ACTION</span>}
+                        {didSuppress && <span style={{ marginLeft: "6px", color: "#ec7063" }}>⛔ SUPPRESSED</span>}
                         {!didSuppress && simPct >= 80 && <span style={{ marginLeft: "6px", color: "#26c281" }}>✅ PERMITTED</span>}
                       </span>
-                      <span style={{ fontSize: "11px", fontWeight: "700", color: simPct >= 80 ? "#26c281" : simPct >= 60 ? "#ffc837" : "var(--textMuted)" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "700", flexShrink: 0, color: simPct >= 80 ? "#26c281" : simPct >= 60 ? "#ffc837" : "var(--textMuted)" }}>
                         {simPct}%
                       </span>
                     </div>
@@ -323,7 +353,12 @@ export default function ReasoningPanel({ lastTriggerResult }) {
                     </div>
 
                     {/* Rule content */}
-                    <div style={{ fontSize: "12px", color: didSuppress ? "#fca5a5" : "var(--textSecondary)", lineHeight: "1.4" }}>
+                    <div style={{
+                      fontSize: "12px",
+                      color: didSuppress ? "#fca5a5" : "var(--textSecondary)",
+                      lineHeight: "1.4",
+                      wordBreak: "break-word",
+                    }}>
                       {rule.content}
                     </div>
                   </div>

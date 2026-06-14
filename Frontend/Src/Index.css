@@ -519,9 +519,16 @@ code, .mono { font-family: var(--fontMono); }
   transition: all var(--transitionFast);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space2);
   line-height: 1.4;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.btn > * { min-width: 0; }
 .btn:hover { background: color-mix(in srgb, var(--textPrimary) 11%, transparent); border-color: var(--borderStrong); color: var(--textPrimary); transform: translateY(-1px); }
 .btn:active { transform: scale(0.97); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }

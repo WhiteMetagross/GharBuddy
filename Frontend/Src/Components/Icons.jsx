@@ -263,8 +263,22 @@ export function SectionLabel({ icon: Icon, label, color = "var(--textMuted)", si
 /** Card header with SVG icon */
 export function CardTitle({ icon: Icon, title, badge, iconColor = "var(--colorOrange)" }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "18px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: "12px",
+      flexWrap: "wrap",
+      marginBottom: "18px",
+      minWidth: 0,
+    }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "10px",
+        minWidth: 0,
+        flex: "1 1 auto",
+      }}>
         {Icon && (
           <div style={{
             width: "32px", height: "32px", borderRadius: "8px",
@@ -276,11 +290,28 @@ export function CardTitle({ icon: Icon, title, badge, iconColor = "var(--colorOr
             <Icon width="16" height="16" />
           </div>
         )}
-        <h2 style={{ fontSize: "16px", fontWeight: "700", color: "var(--textPrimary)", letterSpacing: "-0.2px" }}>
+        <h2
+          title={typeof title === "string" ? title : undefined}
+          style={{
+            fontSize: "16px",
+            fontWeight: "700",
+            color: "var(--textPrimary)",
+            letterSpacing: "-0.2px",
+            margin: 0,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
           {title}
         </h2>
       </div>
-      {badge}
+      {badge && (
+        <div style={{ flexShrink: 0, display: "flex", alignItems: "center", maxWidth: "100%" }}>
+          {badge}
+        </div>
+      )}
     </div>
   );
 }
