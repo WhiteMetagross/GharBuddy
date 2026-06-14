@@ -32,6 +32,8 @@ export default function App() {
 
   // Core data synchronization
   const syncData = async () => {
+    // Preserve scroll position across polling re-renders
+    const scrollY = window.scrollY;
     try {
       const [devicesRes, energyRes, notificationsRes, systemRes] = await Promise.all([
         BackendService.getDevices(),
@@ -40,6 +42,7 @@ export default function App() {
         BackendService.getSystemState()
       ]);
 
+      // Batch all state updates in one React flush to avoid multiple re-renders
       setDevices(devicesRes);
       setEnergyStats(energyRes);
       setNotifications(notificationsRes);
@@ -49,6 +52,9 @@ export default function App() {
       console.error("Sync error:", e);
       setError("Unable to connect to GharBuddy API. Please verify the FastAPI server is running.");
       setLoading(false);
+    } finally {
+      // Restore scroll position after React re-render
+      requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: "instant" }));
     }
   };
 
@@ -57,7 +63,7 @@ export default function App() {
     syncData();
 
     // Regular polling interval to synchronize states in real time
-    const interval = setInterval(syncData, 1500);
+    const interval = setInterval(syncData, 3000);
     return () => clearInterval(interval);
   }, []);
 
@@ -152,7 +158,7 @@ export default function App() {
       <main className="dashboardGrid">
         {/* Left Column: Appliances, energy stats, and simulator triggers */}
         <div className="columnLeft">
-          <HouseholdMap devices={devices} onToggleDevice={handleToggleDevice} />
+          <HouseholdMap devices={devices} systemState={systemState} lastTriggerResult={lastTriggerResult} onToggleDevice={handleToggleDevice} />
           <DeviceGrid devices={devices} onToggleDevice={handleToggleDevice} />
           
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>

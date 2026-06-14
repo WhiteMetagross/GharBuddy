@@ -319,3 +319,89 @@ body {
   background: rgba(255, 255, 255, 0.04);
   color: var(--textSecondary);
 }
+
+/* ==========================================================================
+   Live 2D Digital Twin — Animations & Transitions
+   Requirements: 3.9, 4.8, 7.3, 7.4, 11.1, 11.4
+   ========================================================================== */
+
+/* Presence pulse — room occupancy dots scale in/out */
+@keyframes presencePulse {
+  0%, 100% { r: 4; opacity: 0.6; }
+  50%       { r: 7; opacity: 1;   }
+}
+
+.presencePulseAnim {
+  animation: presencePulse 2s ease-in-out infinite;
+}
+
+/* AI Action Pulse ring — expands and fades out once (1.2 s) */
+@keyframes pulseRing {
+  0%   { r: 10; opacity: 0.8; }
+  100% { r: 30; opacity: 0;   }
+}
+
+.pulseRingAnim {
+  animation: pulseRing 1.2s ease-out forwards;
+}
+
+/* Cooker arc pulse — oscillates stroke-dashoffset while cooking */
+@keyframes cookerPulse {
+  0%, 100% { opacity: 0.9; }
+  50%      { opacity: 0.4; }
+}
+
+.cookerArcAnim {
+  animation: cookerPulse 1.5s ease-in-out infinite;
+}
+
+/* FAST_CHARGE bar — sweeps upward repeatedly */
+@keyframes chargeBar {
+  0%   { transform: translateY(40px); opacity: 0;   }
+  20%  { opacity: 0.9; }
+  80%  { opacity: 0.9; }
+  100% { transform: translateY(0px);  opacity: 0;   }
+}
+
+.chargeBarAnim {
+  animation: chargeBar 1s ease-in-out infinite;
+  transform-origin: bottom center;
+}
+
+/* Festival shimmer — cycles border-color-like glow through warm palette */
+@keyframes festivalShimmer {
+  0%   { fill: rgba(255, 126, 64, 0.07); }
+  33%  { fill: rgba(255, 200, 55, 0.09); }
+  66%  { fill: rgba(38, 194, 129, 0.07); }
+  100% { fill: rgba(255, 126, 64, 0.07); }
+}
+
+.festivalShimmerAnim {
+  animation: festivalShimmer 3s ease-in-out infinite;
+}
+
+/* Device node fill/stroke/opacity smooth transition */
+.deviceNodeTransition {
+  transition: fill 400ms ease, stroke 400ms ease, opacity 400ms ease;
+}
+
+/* Room glow opacity transition */
+.roomGlowTransition {
+  transition: opacity 600ms ease;
+}
+
+/* Scanline drift */
+@keyframes scanline {
+  0%   { transform: translateY(0px);   opacity: 0.06; }
+  50%  { opacity: 0.12; }
+  100% { transform: translateY(430px); opacity: 0.06; }
+}
+
+.scanlineAnim {
+  animation: scanline 6s linear infinite;
+}
+
+/* Digital twin card — slightly tighter padding */
+.digitalTwinCard {
+  padding: 18px 20px !important;
+}

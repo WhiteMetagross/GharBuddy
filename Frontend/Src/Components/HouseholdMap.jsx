@@ -1,227 +1,528 @@
-import React from "react";
+import React, { useState, useRef, useEffect } from "react";
+import {
+  computeTotalLoad,
+  deriveRoomGlows,
+  deriveAmbientTheme,
+  derivePresence,
+  deriveCookerState,
+  getNodeStyle,
+  computeNextStatus,
+  SENSOR_TO_ROOM,
+} from "../lib/digitalTwinHelpers.js";
 
-const deviceIcons = {
-  geyser: "🚿",
-  poojaLights: "🪔",
-  waterMotor: "⛲",
-  inverterBackup: "🔋",
-  livingRoomLights: "💡",
-  television: "📺",
-  airConditioner: "❄️",
-  speakerSystem: "🔊"
+// ---------------------------------------------------------------------------
+// Layout constants — SVG viewBox: "0 0 720 430"
+// ---------------------------------------------------------------------------
+
+const ROOMS = {
+  living:   { x: 12,  y: 12,  w: 268, h: 182, label: "LIVING ROOM",   color: "#3498db", devices: ["television", "livingRoomLights", "speakerSystem"] },
+  bedroom:  { x: 292, y: 12,  w: 262, h: 162, label: "BEDROOM",        color: "#26c281", devices: ["airConditioner"] },
+  kitchen:  { x: 566, y: 12,  w: 142, h: 162, label: "KITCHEN",        color: "#ffc837", devices: ["cooker"] },
+  bathroom: { x: 12,  y: 206, w: 152, h: 210, label: "BATHROOM",       color: "#ff7e40", devices: ["geyser"] },
+  pooja:    { x: 176, y: 206, w: 158, h: 210, label: "POOJA ROOM",     color: "#ffc837", devices: ["poojaLights"] },
+  utility:  { x: 346, y: 186, w: 362, h: 232, label: "UTILITY AREA",  color: "#9b59b6", devices: ["waterMotor", "inverterBackup"] },
 };
 
-export default function HouseholdMap({ devices, onToggleDevice }) {
-  const getPowerUsed = (key, status) => {
-    if (status === "OFF" || status === "STANDBY" && key === "airConditioner") return 0;
-    const device = devices[key];
-    if (!device) return 0;
-    
-    // Custom power draw based on cultural/study mode dims
-    if (status === "MEDITATION_DIMS") return 15;
-    if (status === "STUDY_FOCUS_BRIGHTNESS") return 45;
-    if (status === "DO_NOT_DISTURB") return 5;
-    return device.wattage || 0;
+const DOORWAYS = [
+  { x1: 278, y1: 72,  x2: 292, y2: 72  },  // Living ↔ Bedroom
+  { x1: 554, y1: 72,  x2: 566, y2: 72  },  // Bedroom ↔ Kitchen
+  { x1: 72,  y1: 192, x2: 72,  y2: 206 },  // Living ↔ Bathroom
+  { x1: 256, y1: 252, x2: 256, y2: 272 },  // Bathroom ↔ Pooja
+  { x1: 426, y1: 198, x2: 426, y2: 186 },  // Pooja/Bathroom ↔ Utility
+];
+
+const DEVICE_POSITIONS = {
+  television:       { roomKey: "living",   relX: 14,  relY: 42  },
+  livingRoomLights: { roomKey: "living",   relX: 140, relY: 42  },
+  speakerSystem:    { roomKey: "living",   relX: 78,  relY: 112 },
+  airConditioner:   { roomKey: "bedroom",  relX: 72,  relY: 52  },
+  cooker:           { roomKey: "kitchen",  relX: 16,  relY: 48  },
+  geyser:           { roomKey: "bathroom", relX: 18,  relY: 52  },
+  poojaLights:      { roomKey: "pooja",    relX: 22,  relY: 52  },
+  waterMotor:       { roomKey: "utility",  relX: 18,  relY: 52  },
+  inverterBackup:   { roomKey: "utility",  relX: 18,  relY: 126 },
+};
+
+const PRESENCE_POSITIONS = {
+  living:   { x: 272, y: 88  },
+  bedroom:  { x: 296, y: 88  },
+  bathroom: { x: 72,  y: 202 },
+  kitchen:  { x: 570, y: 28  },
+  pooja:    { x: 256, y: 256 },
+};
+
+// ---------------------------------------------------------------------------
+// DeviceNode — internal SVG sub-component
+// ---------------------------------------------------------------------------
+
+function DeviceNode({ deviceKey, device, x, y, isPulsing, roomColor, onToggle, readOnly }) {
+  const safeDevice = device || { name: deviceKey, status: "OFF", wattage: 0 };
+  const { fill, stroke } = getNodeStyle(safeDevice.status, roomColor);
+
+  const ICON_MAP = {
+    geyser: "🚿", poojaLights: "🪔", waterMotor: "⛲",
+    inverterBackup: "🔋", livingRoomLights: "💡", television: "📺",
+    airConditioner: "❄️", speakerSystem: "🔊", cooker: "🫕"
   };
+  const icon = ICON_MAP[deviceKey] || "🔌";
 
-  const isDeviceOn = (status) => {
-    return status !== "OFF" && status !== "STANDBY";
-  };
+  const isActive = safeDevice.status !== "OFF" && safeDevice.status !== "STANDBY";
+  const statusDisplay = safeDevice.status.replace(/_/g, " ");
+  const wattDisplay = safeDevice.wattage > 0 ? `${safeDevice.wattage}W` : "";
 
-  // Calculate live load
-  const totalLoad = Object.keys(devices).reduce(
-    (sum, key) => sum + getPowerUsed(key, devices[key].status),
-    0
-  );
-
-  // Status check for room lighting glows
-  const isLivingRoomGlowing = isDeviceOn(devices.television?.status) || isDeviceOn(devices.livingRoomLights?.status);
-  const isBedroomGlowing = isDeviceOn(devices.airConditioner?.status);
-  const isBathroomGlowing = isDeviceOn(devices.geyser?.status);
-  const isPoojaGlowing = isDeviceOn(devices.poojaLights?.status);
-  const isUtilityGlowing = isDeviceOn(devices.waterMotor?.status) || devices.inverterBackup?.status === "FAST_CHARGE";
-
-  const handleDeviceClick = (key) => {
-    const currentStatus = devices[key]?.status || "OFF";
-    const nextStatus = currentStatus === "OFF" ? "ON" : "OFF";
-    onToggleDevice(key, nextStatus);
+  const handleClick = () => {
+    if (readOnly) return;
+    const next = computeNextStatus(deviceKey, safeDevice.status, readOnly ? "kitchen" : "other");
+    if (next !== null && onToggle) onToggle(deviceKey, next);
   };
 
   return (
-    <div className="glassCard" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      <div className="cardHeader" style={{ marginBottom: "8px" }}>
+    <g
+      transform={`translate(${x}, ${y})`}
+      cursor={readOnly ? "default" : "pointer"}
+      onClick={handleClick}
+    >
+      {/* Outer glow when active */}
+      {isActive && (
+        <rect
+          x="-3" y="-3" width="111" height="50" rx="9"
+          fill="none"
+          stroke={stroke}
+          strokeWidth="1"
+          opacity="0.3"
+        />
+      )}
+
+      {/* Main background */}
+      <rect
+        x="0" y="0" width="105" height="44" rx="6"
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={isActive ? "1.5" : "1"}
+        className="deviceNodeTransition"
+      />
+
+      {/* Top accent bar when active */}
+      {isActive && (
+        <rect x="0" y="0" width="105" height="3" rx="3"
+          fill={stroke} opacity="0.8"
+        />
+      )}
+
+      {/* DO_NOT_DISTURB overlay */}
+      {safeDevice.status === "DO_NOT_DISTURB" && (
+        <text x="90" y="14" fontSize="10" style={{ userSelect: "none" }}>🔇</text>
+      )}
+
+      {/* FAST_CHARGE bar */}
+      {safeDevice.status === "FAST_CHARGE" && (
+        <rect x="2" y="2" width="5" height="40" rx="2"
+          fill="#26c281" opacity="0.7" className="chargeBarAnim"
+        />
+      )}
+
+      {/* Icon */}
+      <text x="8" y="27" fontSize="16" style={{ userSelect: "none" }}>{icon}</text>
+
+      {/* Device name */}
+      <text x="30" y="18" fill="rgba(245,246,250,0.95)" fontSize="9" fontWeight="700">{safeDevice.name}</text>
+
+      {/* Status + wattage */}
+      <text x="30" y="31" fill={isActive ? stroke : "rgba(160,165,181,0.7)"} fontSize="7.5" fontWeight={isActive ? "600" : "400"}>
+        {wattDisplay ? `${wattDisplay} · ` : ""}{statusDisplay}
+      </text>
+
+      {/* AI pulse ring */}
+      {isPulsing && (
+        <circle cx="52" cy="22" r="10" fill="none"
+          stroke={roomColor} strokeWidth="2" opacity="0"
+          className="pulseRingAnim"
+        />
+      )}
+
+      <title>{`${safeDevice.name} | ${safeDevice.status} | ${safeDevice.wattage}W`}</title>
+    </g>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// HouseholdMap — main export
+// ---------------------------------------------------------------------------
+
+export default function HouseholdMap({ devices, systemState, lastTriggerResult, onToggleDevice }) {
+  const safeSystemState = systemState || {
+    simulatedTime: "12:00:00",
+    powerStatus: "GRID",
+    whistleCount: 0,
+    targetWhistles: 0,
+    isFastingDay: false,
+    festivalName: null,
+    eventHistory: []
+  };
+
+  const [pulseTarget, setPulseTarget] = useState(null);
+  const prevTriggerRef = useRef(null);
+  const [poojaHighlight, setPoojaHighlight] = useState(false);
+
+  const totalLoad = computeTotalLoad(devices);
+  const roomGlows = deriveRoomGlows(devices, safeSystemState);
+  const cookerState = deriveCookerState(safeSystemState);
+  const presenceMap = derivePresence(safeSystemState.eventHistory);
+  const ambientTheme = deriveAmbientTheme(safeSystemState);
+
+  const kitchenRoom = ROOMS.kitchen;
+  const cookerPos = DEVICE_POSITIONS.cooker;
+  const cookerAbsX = kitchenRoom.x + cookerPos.relX;
+  const cookerAbsY = kitchenRoom.y + cookerPos.relY;
+
+  useEffect(() => {
+    if (!lastTriggerResult || lastTriggerResult === prevTriggerRef.current) return;
+    const decision = lastTriggerResult.decision;
+    if (!decision) return;
+    prevTriggerRef.current = lastTriggerResult;
+    const target = decision.targetDevice === "allDevices" ? "all" : decision.targetDevice;
+    setPulseTarget(target);
+    if (decision.actionId === "activatePoojaMode") {
+      setPoojaHighlight(true);
+      setTimeout(() => setPoojaHighlight(false), 3000);
+    }
+    const timer = setTimeout(() => setPulseTarget(null), 1200);
+    return () => clearTimeout(timer);
+  }, [lastTriggerResult]);
+
+  const loadColor = totalLoad > 1500 ? "#ec7063" : totalLoad > 1000 ? "#ffc837" : "#26c281";
+
+  return (
+    <div className="glassCard digitalTwinCard" style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <h2>🗺️ 2D Interactive Household Map</h2>
-          <p style={{ fontSize: "11px", color: "var(--textSecondary)", marginTop: "2px" }}>
-            Click appliances directly on the Among Us-style floor plan to control them.
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <h2 style={{ fontSize: "18px", fontWeight: "700", color: "var(--textPrimary)" }}>
+              🏠 Live 2D Digital Twin
+            </h2>
+            {/* Live pulse indicator */}
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: "4px",
+              fontSize: "10px", fontWeight: "700", color: "#26c281",
+              background: "rgba(38,194,129,0.1)", border: "1px solid rgba(38,194,129,0.2)",
+              borderRadius: "10px", padding: "2px 7px"
+            }}>
+              <span className="glowingDot" style={{ width: "5px", height: "5px" }}></span>
+              LIVE
+            </span>
+            {safeSystemState.powerStatus === "INVERTER" && (
+              <span data-testid="inverter-badge" style={{
+                display: "inline-flex", alignItems: "center", gap: "4px",
+                fontSize: "10px", fontWeight: "700", color: "#ffc837",
+                background: "rgba(255,200,55,0.1)", border: "1px solid rgba(255,200,55,0.3)",
+                borderRadius: "10px", padding: "2px 7px"
+              }}>⚡ INVERTER</span>
+            )}
+          </div>
+          <p style={{ fontSize: "10px", color: "var(--textMuted)", marginTop: "3px" }}>
+            Click any appliance to toggle it · Real-time sensor sync
           </p>
         </div>
-        
-        {/* Live Power Monitor */}
-        <div style={{ textAlign: "right" }}>
-          <span style={{ fontSize: "11px", color: "var(--textMuted)", textTransform: "uppercase", fontWeight: "700" }}>
-            Total Home Load
-          </span>
-          <div style={{ fontSize: "20px", fontWeight: "800", color: totalLoad > 1000 ? "var(--colorWarning)" : "var(--colorSuccess)" }}>
-            ⚡ {totalLoad} W
+
+        {/* Power load widget */}
+        <div style={{
+          textAlign: "right",
+          background: "rgba(0,0,0,0.3)",
+          border: `1px solid ${loadColor}33`,
+          borderRadius: "10px",
+          padding: "8px 14px"
+        }}>
+          <div style={{ fontSize: "9px", color: "var(--textMuted)", textTransform: "uppercase", fontWeight: "700", letterSpacing: "1px" }}>
+            Home Load
+          </div>
+          <div style={{ fontSize: "22px", fontWeight: "800", color: loadColor, lineHeight: 1.2 }}>
+            {totalLoad}<span style={{ fontSize: "11px", fontWeight: "500", marginLeft: "3px", opacity: 0.7 }}>W</span>
           </div>
         </div>
       </div>
 
-      {/* Interactive SVG Floor Plan */}
-      <div style={{ 
-        background: "#0c0d12", 
-        borderRadius: "12px", 
-        border: "1px solid rgba(255, 255, 255, 0.05)",
+      {/* SVG Map */}
+      <div style={{
+        background: "linear-gradient(145deg, #090a0f 0%, #0c0d14 100%)",
+        borderRadius: "12px",
+        border: "1px solid rgba(255,255,255,0.07)",
         overflow: "hidden",
-        position: "relative"
+        position: "relative",
+        boxShadow: "inset 0 0 40px rgba(0,0,0,0.5)"
       }}>
-        <svg viewBox="0 0 600 360" width="100%" height="100%" style={{ display: "block" }}>
+        <svg viewBox="0 0 720 430" width="100%" style={{ display: "block" }}>
           <defs>
-            {/* Soft Glow Filters */}
-            <radialGradient id="livingGlow" cx="25%" cy="25%" r="70%">
-              <stop offset="0%" stopColor="#3498db" stopOpacity="0.12" />
-              <stop offset="100%" stopColor="#0c0d12" stopOpacity="0" />
-            </radialGradient>
-            <radialGradient id="bedroomGlow" cx="75%" cy="25%" r="70%">
-              <stop offset="0%" stopColor="#26c281" stopOpacity="0.1" />
-              <stop offset="100%" stopColor="#0c0d12" stopOpacity="0" />
-            </radialGradient>
-            <radialGradient id="bathroomGlow" cx="20%" cy="80%" r="70%">
-              <stop offset="0%" stopColor="#ff7e40" stopOpacity="0.15" />
-              <stop offset="100%" stopColor="#0c0d12" stopOpacity="0" />
-            </radialGradient>
-            <radialGradient id="poojaGlow" cx="50%" cy="80%" r="70%">
-              <stop offset="0%" stopColor="#ffc837" stopOpacity="0.15" />
-              <stop offset="100%" stopColor="#0c0d12" stopOpacity="0" />
-            </radialGradient>
-            <radialGradient id="utilityGlow" cx="80%" cy="80%" r="70%">
-              <stop offset="0%" stopColor="#9b59b6" stopOpacity="0.12" />
-              <stop offset="100%" stopColor="#0c0d12" stopOpacity="0" />
-            </radialGradient>
+            {/* Room glow gradients */}
+            {Object.entries(ROOMS).map(([roomKey, room]) => (
+              <radialGradient key={roomKey} id={`${roomKey}Glow`} cx="50%" cy="50%" r="65%">
+                <stop offset="0%" stopColor={room.color} stopOpacity="0.22" />
+                <stop offset="100%" stopColor={room.color} stopOpacity="0" />
+              </radialGradient>
+            ))}
+
+            {/* Floor grid pattern */}
+            <pattern id="floorGrid" width="20" height="20" patternUnits="userSpaceOnUse">
+              <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255,255,255,0.025)" strokeWidth="0.5"/>
+            </pattern>
+
+            {/* Wall inner shadow filter */}
+            <filter id="wallGlow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="3" result="blur"/>
+              <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+            </filter>
+
+            {/* Device node shadow */}
+            <filter id="nodeShadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feDropShadow dx="0" dy="2" stdDeviation="3" floodOpacity="0.4"/>
+            </filter>
           </defs>
 
-          {/* BACKGROUND GLOWS (React to device states) */}
-          {isLivingRoomGlowing && <rect x="15" y="15" width="270" height="170" fill="url(#livingGlow)" transition="all 0.5s ease" />}
-          {isBedroomGlowing && <rect x="300" y="15" width="285" height="150" fill="url(#bedroomGlow)" transition="all 0.5s ease" />}
-          {isBathroomGlowing && <rect x="15" y="200" width="165" height="145" fill="url(#bathroomGlow)" transition="all 0.5s ease" />}
-          {isPoojaGlowing && <rect x="195" y="200" width="165" height="145" fill="url(#poojaGlow)" transition="all 0.5s ease" />}
-          {isUtilityGlowing && <rect x="375" y="180" width="210" height="165" fill="url(#utilityGlow)" transition="all 0.5s ease" />}
+          {/* Global floor grid */}
+          <rect x="0" y="0" width="720" height="430" fill="url(#floorGrid)" />
 
-          {/* ROOM WALL BORDERS */}
-          {/* Living Room */}
-          <rect x="15" y="15" width="270" height="170" fill="none" stroke={isLivingRoomGlowing ? "rgba(52, 152, 219, 0.4)" : "rgba(255,255,255,0.06)"} strokeWidth="2" rx="6" />
-          {/* Bedroom */}
-          <rect x="300" y="15" width="285" height="150" fill="none" stroke={isBedroomGlowing ? "rgba(38, 194, 129, 0.4)" : "rgba(255,255,255,0.06)"} strokeWidth="2" rx="6" />
-          {/* Bathroom */}
-          <rect x="15" y="200" width="165" height="145" fill="none" stroke={isBathroomGlowing ? "rgba(255, 126, 64, 0.5)" : "rgba(255,255,255,0.06)"} strokeWidth="2" rx="6" />
-          {/* Pooja Room */}
-          <rect x="195" y="200" width="165" height="145" fill="none" stroke={isPoojaGlowing ? "rgba(255, 200, 55, 0.5)" : "rgba(255,255,255,0.06)"} strokeWidth="2" rx="6" />
-          {/* Utility Balcony */}
-          <rect x="375" y="180" width="210" height="165" fill="none" stroke={isUtilityGlowing ? "rgba(155, 89, 182, 0.4)" : "rgba(255,255,255,0.06)"} strokeWidth="2" rx="6" />
+          {/* Ambient tint */}
+          {ambientTheme.bgTint && (
+            <rect x="0" y="0" width="720" height="430"
+              fill={ambientTheme.bgTint} pointerEvents="none"
+              style={{ transition: "fill 800ms ease" }}
+            />
+          )}
 
-          {/* ROOM LABELS */}
-          <text x="35" y="40" fill="var(--textSecondary)" fontSize="11" fontWeight="700" letterSpacing="0.5">LIVING ROOM</text>
-          <text x="320" y="40" fill="var(--textSecondary)" fontSize="11" fontWeight="700" letterSpacing="0.5">BEDROOM</text>
-          <text x="35" y="225" fill="var(--textSecondary)" fontSize="11" fontWeight="700" letterSpacing="0.5">BATHROOM</text>
-          <text x="215" y="225" fill="var(--textSecondary)" fontSize="11" fontWeight="700" letterSpacing="0.5">POOJA ROOM 🪔</text>
-          <text x="395" y="205" fill="var(--textSecondary)" fontSize="11" fontWeight="700" letterSpacing="0.5">UTILITY AREA</text>
+          {/* Room floor fills — subtle colored floor per room */}
+          {Object.entries(ROOMS).map(([roomKey, room]) => {
+            const glowOpacity = roomKey === "pooja" && poojaHighlight
+              ? 1
+              : (roomGlows[roomKey] ?? 0);
+            return (
+              <g key={`floor-${roomKey}`}>
+                {/* Base floor */}
+                <rect
+                  x={room.x + 1} y={room.y + 1}
+                  width={room.w - 2} height={room.h - 2}
+                  fill={`${room.color}08`}
+                  rx="5"
+                />
+                {/* Glow overlay */}
+                <rect
+                  x={room.x + 1} y={room.y + 1}
+                  width={room.w - 2} height={room.h - 2}
+                  fill={`url(#${roomKey}Glow)`}
+                  style={{ opacity: glowOpacity, transition: "opacity 600ms ease" }}
+                  rx="5"
+                />
+              </g>
+            );
+          })}
 
-          {/* CONNECTOR DOORWAYS (Visual lines) */}
-          <line x1="285" y1="90" x2="300" y2="90" stroke="#0c0d12" strokeWidth="6" /> {/* Hall to Bed */}
-          <line x1="100" y1="185" x2="100" y2="200" stroke="#0c0d12" strokeWidth="6" /> {/* Hall to Bath */}
-          <line x1="280" y1="230" x2="280" y2="250" stroke="#0c0d12" strokeWidth="4" />
-          
-          {/* INTERACTIVE APPLIANCE NODES */}
-          {/* 1. TV (Living Room) */}
-          <g transform="translate(60, 75)" cursor="pointer" onClick={() => handleDeviceClick("television")}>
-            <rect x="0" y="0" width="80" height="40" rx="6" fill={isDeviceOn(devices.television?.status) ? "rgba(52,152,219,0.15)" : "rgba(255,255,255,0.02)"} stroke={isDeviceOn(devices.television?.status) ? "#3498db" : "rgba(255,255,255,0.1)"} strokeWidth="1" />
-            <text x="8" y="24" fontSize="16">{deviceIcons.television}</text>
-            <text x="32" y="18" fill="white" fontSize="10" fontWeight="600">Smart TV</text>
-            <text x="32" y="30" fill="var(--textSecondary)" fontSize="8">{getPowerUsed("television", devices.television?.status)}W | {devices.television?.status || "OFF"}</text>
+          {/* Room walls — double-line effect */}
+          {Object.entries(ROOMS).map(([roomKey, room]) => {
+            const isGlowing = (roomGlows[roomKey] ?? 0) > 0 || (roomKey === "pooja" && poojaHighlight);
+            const wallColor = isGlowing ? room.color : "rgba(255,255,255,0.1)";
+            const wallOpacity = isGlowing ? 0.6 : 1;
+            return (
+              <g key={`wall-${roomKey}`}>
+                {/* Outer wall (thicker, darker) */}
+                <rect
+                  x={room.x} y={room.y} width={room.w} height={room.h}
+                  fill="none"
+                  stroke="rgba(0,0,0,0.6)"
+                  strokeWidth="4"
+                  rx="6"
+                />
+                {/* Inner wall (colored) */}
+                <rect
+                  x={room.x} y={room.y} width={room.w} height={room.h}
+                  fill="none"
+                  stroke={wallColor}
+                  strokeWidth="1.5"
+                  opacity={wallOpacity}
+                  rx="6"
+                  style={{ transition: "stroke 600ms ease, opacity 600ms ease" }}
+                />
+              </g>
+            );
+          })}
+
+          {/* Doorways */}
+          {DOORWAYS.map((d, i) => (
+            <line key={`door-${i}`}
+              x1={d.x1} y1={d.y1} x2={d.x2} y2={d.y2}
+              stroke="#090a0f" strokeWidth="7"
+            />
+          ))}
+
+          {/* Room labels with background pill */}
+          {Object.entries(ROOMS).map(([roomKey, room]) => {
+            const isGlowing = (roomGlows[roomKey] ?? 0) > 0;
+            return (
+              <g key={`label-${roomKey}`}>
+                <rect
+                  x={room.x + 8} y={room.y + 7}
+                  width={room.label.length * 6.2 + 10} height="14"
+                  rx="3"
+                  fill={isGlowing ? `${room.color}20` : "rgba(0,0,0,0.3)"}
+                  style={{ transition: "fill 600ms ease" }}
+                />
+                <text
+                  x={room.x + 13} y={room.y + 18}
+                  fill={isGlowing ? room.color : "rgba(160,165,181,0.7)"}
+                  fontSize="8.5" fontWeight="800" letterSpacing="0.8"
+                  style={{ transition: "fill 600ms ease" }}
+                >
+                  {room.label}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Pooja icon */}
+          <text x={ROOMS.pooja.x + 8} y={ROOMS.pooja.y + 34} fontSize="12" style={{ userSelect: "none" }}>🪔</text>
+
+          {/* Festival watermark */}
+          {safeSystemState.festivalName && (
+            <text x="360" y="222" textAnchor="middle" fontSize="52" fontWeight="800"
+              fill="rgba(255,200,55,0.06)" className="festivalShimmerAnim"
+              style={{ userSelect: "none", pointerEvents: "none" }}>
+              {safeSystemState.festivalName}
+            </text>
+          )}
+
+          {/* Fasting badge */}
+          {safeSystemState.isFastingDay && (
+            <text data-testid="fasting-badge"
+              x={ROOMS.kitchen.x + 10} y={ROOMS.kitchen.y + 38}
+              fill="rgba(255,200,55,0.9)" fontSize="14" style={{ userSelect: "none" }}>
+              🙏
+            </text>
+          )}
+
+          {/* Device Nodes */}
+          {Object.entries(DEVICE_POSITIONS)
+            .filter(([key]) => key !== "cooker")
+            .map(([deviceKey, pos]) => {
+              const room = ROOMS[pos.roomKey];
+              const absX = room.x + pos.relX;
+              const absY = room.y + pos.relY;
+              const isPulsing = pulseTarget === deviceKey || pulseTarget === "all";
+              return (
+                <DeviceNode
+                  key={deviceKey}
+                  deviceKey={deviceKey}
+                  device={devices[deviceKey]}
+                  x={absX} y={absY}
+                  isPulsing={isPulsing}
+                  roomColor={room.color}
+                  onToggle={onToggleDevice}
+                  readOnly={pos.roomKey === "kitchen"}
+                />
+              );
+            })
+          }
+
+          {/* Cooker Node */}
+          {(() => {
+            const { state, progress } = cookerState;
+            const radius = 18;
+            const circumference = 2 * Math.PI * radius;
+            const dashOffset = circumference * (1 - progress);
+            const isActive = state !== "dormant";
+            return (
+              <g transform={`translate(${cookerAbsX}, ${cookerAbsY})`} cursor="default">
+                {isActive && (
+                  <rect x="-3" y="-3" width="111" height="50" rx="9"
+                    fill="none"
+                    stroke={state === "done" ? "#26c281" : "#ffc837"}
+                    strokeWidth="1" opacity="0.3"
+                  />
+                )}
+                <rect x="0" y="0" width="105" height="44" rx="6"
+                  fill={state === "dormant" ? "rgba(255,255,255,0.02)" : state === "done" ? "rgba(38,194,129,0.12)" : "rgba(255,200,55,0.12)"}
+                  stroke={state === "dormant" ? "rgba(255,255,255,0.1)" : state === "done" ? "#26c281" : "#ffc837"}
+                  strokeWidth="1.5"
+                />
+                {isActive && (
+                  <rect x="0" y="0" width="105" height="3" rx="3"
+                    fill={state === "done" ? "#26c281" : "#ffc837"} opacity="0.8"
+                  />
+                )}
+                {state === "active" && (
+                  <circle cx="52" cy="22" r={radius}
+                    fill="none" stroke="#ffc837" strokeWidth="3"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={dashOffset}
+                    strokeLinecap="round"
+                    transform="rotate(-90 52 22)"
+                    style={{ transition: "stroke-dashoffset 400ms ease" }}
+                    className="cookerArcAnim"
+                  />
+                )}
+                <text x="8" y="27" fontSize="16" style={{ userSelect: "none" }}>🫕</text>
+                <text x="30" y="18" fill="rgba(245,246,250,0.95)" fontSize="9" fontWeight="700">Cooker</text>
+                <text x="30" y="31" fill={state === "done" ? "#26c281" : state === "active" ? "#ffc837" : "rgba(160,165,181,0.6)"} fontSize="7.5" fontWeight="600">
+                  {state === "done" ? "✅ Done!" : state === "active" ? `${safeSystemState.whistleCount}/${safeSystemState.targetWhistles} whistles` : "Idle"}
+                </text>
+                <title>{`Cooker | ${safeSystemState.whistleCount}/${safeSystemState.targetWhistles} whistles | ${state}`}</title>
+              </g>
+            );
+          })()}
+
+          {/* Presence Indicators */}
+          {Object.entries(PRESENCE_POSITIONS).map(([roomKey, pos]) => {
+            const isPresent = presenceMap.has(roomKey);
+            return (
+              <g key={`presence-${roomKey}`}>
+                {isPresent && (
+                  <circle cx={pos.x} cy={pos.y} r="9"
+                    fill={ROOMS[roomKey]?.color ?? "#fff"}
+                    opacity="0.08"
+                    className="presencePulseAnim"
+                  />
+                )}
+                <circle
+                  cx={pos.x} cy={pos.y} r="4"
+                  fill={ROOMS[roomKey]?.color ?? "#fff"}
+                  opacity={isPresent ? 0.9 : 0}
+                  style={{ transition: "opacity 400ms ease" }}
+                  className={isPresent ? "presencePulseAnim" : ""}
+                />
+              </g>
+            );
+          })}
+
+          {/* HUD corner brackets */}
+          <g stroke="rgba(52,152,219,0.3)" strokeWidth="1.5" fill="none">
+            <path d="M 4 16 L 4 4 L 16 4" />
+            <path d="M 704 16 L 704 4 L 692 4" />
+            <path d="M 4 414 L 4 426 L 16 426" />
+            <path d="M 704 414 L 704 426 L 692 426" />
           </g>
 
-          {/* 2. Living Lights (Living Room) */}
-          <g transform="translate(170, 75)" cursor="pointer" onClick={() => handleDeviceClick("livingRoomLights")}>
-            <rect x="0" y="0" width="90" height="40" rx="6" fill={isDeviceOn(devices.livingRoomLights?.status) ? "rgba(52,152,219,0.15)" : "rgba(255,255,255,0.02)"} stroke={isDeviceOn(devices.livingRoomLights?.status) ? "#3498db" : "rgba(255,255,255,0.1)"} strokeWidth="1" />
-            <text x="8" y="24" fontSize="16">{deviceIcons.livingRoomLights}</text>
-            <text x="32" y="18" fill="white" fontSize="10" fontWeight="600">LR Lights</text>
-            <text x="32" y="30" fill="var(--textSecondary)" fontSize="8">{getPowerUsed("livingRoomLights", devices.livingRoomLights?.status)}W | {devices.livingRoomLights?.status || "OFF"}</text>
-          </g>
-
-          {/* 3. Speaker (Living Room) */}
-          <g transform="translate(110, 130)" cursor="pointer" onClick={() => handleDeviceClick("speakerSystem")}>
-            <circle cx="16" cy="16" r="16" fill={isDeviceOn(devices.speakerSystem?.status) ? "rgba(52,152,219,0.15)" : "rgba(255,255,255,0.02)"} stroke={isDeviceOn(devices.speakerSystem?.status) ? "#3498db" : "rgba(255,255,255,0.1)"} strokeWidth="1" />
-            <text x="8" y="22" fontSize="12">{deviceIcons.speakerSystem}</text>
-            <text x="38" y="14" fill="white" fontSize="9" fontWeight="600">Alexa Speaker</text>
-            <text x="38" y="24" fill="var(--textMuted)" fontSize="8">{getPowerUsed("speakerSystem", devices.speakerSystem?.status)}W | {devices.speakerSystem?.status || "NORMAL"}</text>
-          </g>
-
-          {/* 4. AC (Bedroom) */}
-          <g transform="translate(390, 70)" cursor="pointer" onClick={() => handleDeviceClick("airConditioner")}>
-            <rect x="0" y="0" width="100" height="40" rx="6" fill={isDeviceOn(devices.airConditioner?.status) ? "rgba(38,194,129,0.15)" : "rgba(255,255,255,0.02)"} stroke={isDeviceOn(devices.airConditioner?.status) ? "#26c281" : "rgba(255,255,255,0.1)"} strokeWidth="1" />
-            <text x="8" y="26" fontSize="16">{deviceIcons.airConditioner}</text>
-            <text x="32" y="18" fill="white" fontSize="10" fontWeight="600">Air Conditioner</text>
-            <text x="32" y="30" fill="var(--textSecondary)" fontSize="8">{getPowerUsed("airConditioner", devices.airConditioner?.status)}W | {devices.airConditioner?.status || "OFF"}</text>
-          </g>
-
-          {/* 5. Geyser (Bathroom) */}
-          <g transform="translate(45, 255)" cursor="pointer" onClick={() => handleDeviceClick("geyser")}>
-            <rect x="0" y="0" width="105" height="42" rx="6" fill={isDeviceOn(devices.geyser?.status) ? "rgba(255,126,64,0.15)" : "rgba(255,255,255,0.02)"} stroke={isDeviceOn(devices.geyser?.status) ? "var(--colorOrange)" : "rgba(255,255,255,0.1)"} strokeWidth="1" />
-            <text x="8" y="26" fontSize="16">{deviceIcons.geyser}</text>
-            <text x="32" y="18" fill="white" fontSize="10" fontWeight="600">Bath Geyser</text>
-            <text x="32" y="30" fill="var(--textSecondary)" fontSize="8">{getPowerUsed("geyser", devices.geyser?.status)}W | {devices.geyser?.status || "OFF"}</text>
-          </g>
-
-          {/* 6. Pooja Lights (Pooja Room) */}
-          <g transform="translate(225, 255)" cursor="pointer" onClick={() => handleDeviceClick("poojaLights")}>
-            <rect x="0" y="0" width="105" height="42" rx="6" fill={isDeviceOn(devices.poojaLights?.status) ? "rgba(255,200,55,0.15)" : "rgba(255,255,255,0.02)"} stroke={isDeviceOn(devices.poojaLights?.status) ? "var(--colorYellow)" : "rgba(255,255,255,0.1)"} strokeWidth="1" />
-            <text x="8" y="26" fontSize="16">{deviceIcons.poojaLights}</text>
-            <text x="32" y="18" fill="white" fontSize="10" fontWeight="600">Pooja Lights</text>
-            <text x="32" y="30" fill="var(--textSecondary)" fontSize="8">{getPowerUsed("poojaLights", devices.poojaLights?.status)}W | {devices.poojaLights?.status.replace(/_/g, " ") || "OFF"}</text>
-          </g>
-
-          {/* 7. Inverter Charger (Utility Balcony) */}
-          <g transform="translate(415, 220)" cursor="pointer" onClick={() => handleDeviceClick("inverterBackup")}>
-            <rect x="0" y="0" width="120" height="42" rx="6" fill={devices.inverterBackup?.status !== "OFF" ? "rgba(155,89,182,0.15)" : "rgba(255,255,255,0.02)"} stroke={devices.inverterBackup?.status !== "OFF" ? "#9b59b6" : "rgba(255,255,255,0.1)"} strokeWidth="1" />
-            <text x="8" y="26" fontSize="16">{deviceIcons.inverterBackup}</text>
-            <text x="32" y="18" fill="white" fontSize="10" fontWeight="600">Inverter backup</text>
-            <text x="32" y="30" fill="var(--textSecondary)" fontSize="8">{getPowerUsed("inverterBackup", devices.inverterBackup?.status)}W | {devices.inverterBackup?.status.replace(/_/g, " ") || "OFF"}</text>
-          </g>
-
-          {/* 8. Water Motor (Utility Balcony) */}
-          <g transform="translate(415, 275)" cursor="pointer" onClick={() => handleDeviceClick("waterMotor")}>
-            <rect x="0" y="0" width="120" height="42" rx="6" fill={isDeviceOn(devices.waterMotor?.status) ? "rgba(155,89,182,0.15)" : "rgba(255,255,255,0.02)"} stroke={isDeviceOn(devices.waterMotor?.status) ? "#9b59b6" : "rgba(255,255,255,0.1)"} strokeWidth="1" />
-            <text x="8" y="26" fontSize="16">{deviceIcons.waterMotor}</text>
-            <text x="32" y="18" fill="white" fontSize="10" fontWeight="600">Water Pump</text>
-            <text x="32" y="30" fill="var(--textSecondary)" fontSize="8">{getPowerUsed("waterMotor", devices.waterMotor?.status)}W | {devices.waterMotor?.status || "OFF"}</text>
-          </g>
+          {/* Scan line effect — subtle horizontal line that drifts */}
+          <rect x="0" y="0" width="720" height="1"
+            fill="rgba(255,255,255,0.04)" pointerEvents="none"
+            className="scanlineAnim"
+          />
 
         </svg>
       </div>
 
-      {/* Map Legend */}
-      <div style={{ display: "flex", gap: "16px", justifyContent: "center", fontSize: "11px", color: "var(--textMuted)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#3498db" }}></span>
-          <span>Living Room Glow</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#26c281" }}></span>
-          <span>Bedroom Glow</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--colorOrange)" }}></span>
-          <span>Bathroom Glow</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--colorYellow)" }}></span>
-          <span>Pooja Gold Glow</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#9b59b6" }}></span>
-          <span>Utility Glow</span>
-        </div>
+      {/* Legend row */}
+      <div style={{
+        display: "flex", gap: "10px", flexWrap: "wrap",
+        justifyContent: "center", fontSize: "10px", color: "var(--textMuted)"
+      }}>
+        {Object.entries(ROOMS).map(([key, room]) => (
+          <div key={key} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+            <span style={{
+              width: "7px", height: "7px", borderRadius: "50%",
+              background: room.color,
+              boxShadow: (roomGlows[key] ?? 0) > 0 ? `0 0 6px ${room.color}` : "none",
+              transition: "box-shadow 600ms ease"
+            }}></span>
+            <span>{room.label}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
