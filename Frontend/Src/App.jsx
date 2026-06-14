@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { BackendService } from "./Services/BackendService";
+import { useWebSocket } from "./hooks/useWebSocket.js";
 import SensorSimulator from "./Components/SensorSimulator";
 import DeviceGrid from "./Components/DeviceGrid";
 import ReasoningPanel from "./Components/ReasoningPanel";
@@ -30,6 +31,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const { isConnected, lastMessage } = useWebSocket("ws://localhost:8000/ws");
+  const pollingIntervalRef = useRef(null);
+
   // Core data synchronization
   const syncData = async () => {
     // Preserve scroll position across polling re-renders
@@ -58,14 +62,34 @@ export default function App() {
     }
   };
 
+  // Initial data fetch — runs once on mount regardless of WebSocket state
   useEffect(() => {
-    // Initial sync
     syncData();
-
-    // Regular polling interval to synchronize states in real time
-    const interval = setInterval(syncData, 3000);
-    return () => clearInterval(interval);
   }, []);
+
+  // Effect A — handle WebSocket messages
+  useEffect(() => {
+    if (!lastMessage || lastMessage.type === "ping") return;
+    if (lastMessage.devices) setDevices(lastMessage.devices);
+    if (lastMessage.energyStats) setEnergyStats(lastMessage.energyStats);
+    if (lastMessage.notifications) setNotifications(lastMessage.notifications);
+    if (lastMessage.systemState) setSystemState(lastMessage.systemState);
+    setLoading(false);
+  }, [lastMessage]);
+
+  // Effect B — manage polling as fallback when WebSocket is disconnected
+  useEffect(() => {
+    if (isConnected) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    } else {
+      if (!pollingIntervalRef.current) {
+        syncData(); // immediate sync when falling back to polling
+        pollingIntervalRef.current = setInterval(syncData, 3000);
+      }
+    }
+    return () => clearInterval(pollingIntervalRef.current);
+  }, [isConnected]);
 
   const handleStateChange = async (type, payload) => {
     try {
@@ -137,10 +161,19 @@ export default function App() {
             </div>
           )}
           <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "10px" }}>
-            {error ? <span className="glowingDotRed"></span> : <span className="glowingDot"></span>}
-            <span style={{ fontSize: "12px", color: error ? "var(--colorDanger)" : "var(--colorSuccess)" }}>
-              {error ? "Backend Offline" : "Connected to AWS IoT Core"}
-            </span>
+            {(() => {
+              const status = isConnected ? "ws" : error ? "offline" : "polling";
+              return (
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "10px" }}>
+                  {status === "ws" && <span className="glowingDot"></span>}
+                  {status === "polling" && <span className="glowingDot" style={{ background: "var(--colorOrange)", boxShadow: "0 0 10px var(--colorOrange)" }}></span>}
+                  {status === "offline" && <span className="glowingDotRed"></span>}
+                  <span style={{ fontSize: "12px", color: status === "ws" ? "var(--colorSuccess)" : status === "polling" ? "var(--colorOrange)" : "var(--colorDanger)" }}>
+                    {status === "ws" ? "WebSocket Live" : status === "polling" ? "Polling" : "Backend Offline"}
+                  </span>
+                </div>
+              );
+            })()}
           </div>
         </div>
       </header>

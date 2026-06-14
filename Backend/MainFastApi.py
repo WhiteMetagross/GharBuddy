@@ -1,10 +1,12 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+import asyncio
+import json as _json
 
 from Backend.Models.IndianCalendar import IndianCalendar
 from Backend.Models.RoutinePredictor import RoutinePredictor
@@ -12,6 +14,34 @@ from Backend.Services.DatabaseService import DatabaseService
 from Backend.Services.TwilioService import TwilioService
 from Backend.Services.BedrockService import BedrockService
 from Backend.Services.VectorStoreService import VectorStoreService
+
+HEARTBEAT_INTERVAL = 30
+
+
+class ConnectionManager:
+    def __init__(self):
+        self.activeConnections: list = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.activeConnections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self.activeConnections:
+            self.activeConnections.remove(websocket)
+
+    async def broadcast(self, data: dict) -> None:
+        disconnected = []
+        for ws in list(self.activeConnections):
+            try:
+                await ws.send_json(data)
+            except Exception:
+                disconnected.append(ws)
+        for ws in disconnected:
+            self.disconnect(ws)
+
+
+manager = ConnectionManager()
 
 app = FastAPI(title="GharBuddy API", description="Context-Aware Smart Home for Indian Households")
 
@@ -35,6 +65,45 @@ bedrockInstance = BedrockService()
 # Global state trackers for simulated environments
 simulatedTime = "06:00:00"
 powerStatus = "GRID"
+
+
+# ---------------------------------------------------------------------------
+# WebSocket helpers
+# ---------------------------------------------------------------------------
+
+def buildSystemState():
+    festival = calendarInstance.getFestivalStatus()
+    return {
+        "simulatedTime": simulatedTime,
+        "simulatedDate": calendarInstance.getCurrentDateString(),
+        "powerStatus": powerStatus,
+        "whistleCount": predictorInstance.whistleCount,
+        "targetWhistles": predictorInstance.targetWhistles,
+        "isFastingDay": calendarInstance.isFastingToday(),
+        "festivalName": festival.get("festivalName") if festival else None,
+        "eventHistory": databaseInstance.getEventHistory()
+    }
+
+
+async def broadcastSnapshot():
+    snapshot = {
+        "devices": databaseInstance.getDeviceStates(),
+        "systemState": buildSystemState(),
+        "energyStats": databaseInstance.getEnergyStats(),
+        "notifications": twilioInstance.getNotificationLogs(),
+    }
+    await manager.broadcast(snapshot)
+
+
+@app.websocket("/ws")
+async def websocketEndpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            await websocket.send_json({"type": "ping"})
+    except (WebSocketDisconnect, Exception):
+        manager.disconnect(websocket)
 
 # API schemas
 class SensorTriggerRequest(BaseModel):
@@ -60,10 +129,11 @@ def getDevices():
     return databaseInstance.getDeviceStates()
 
 @app.post("/api/devices/toggle")
-def toggleDevice(req: DeviceToggleRequest):
+def toggleDevice(req: DeviceToggleRequest, background_tasks: BackgroundTasks):
     success = databaseInstance.updateDeviceState(req.deviceId, req.status)
     if not success:
         raise HTTPException(status_code=404, detail="Device not found")
+    background_tasks.add_task(broadcastSnapshot)
     return {"status": "success", "deviceId": req.deviceId, "newStatus": req.status}
 
 @app.get("/api/energy/stats")
@@ -76,20 +146,10 @@ def getNotifications():
 
 @app.get("/api/system/state")
 def getSystemState():
-    festival = calendarInstance.getFestivalStatus()
-    return {
-        "simulatedTime": simulatedTime,
-        "simulatedDate": calendarInstance.getCurrentDateString(),
-        "powerStatus": powerStatus,
-        "whistleCount": predictorInstance.whistleCount,
-        "targetWhistles": predictorInstance.targetWhistles,
-        "isFastingDay": calendarInstance.isFastingToday(),
-        "festivalName": festival.get("festivalName") if festival else None,
-        "eventHistory": databaseInstance.getEventHistory()
-    }
+    return buildSystemState()
 
 @app.post("/api/settings/update")
-def updateSettings(req: SettingsUpdateRequest):
+def updateSettings(req: SettingsUpdateRequest, background_tasks: BackgroundTasks):
     global simulatedTime, powerStatus
     if req.simulatedTime is not None:
         simulatedTime = req.simulatedTime
@@ -103,7 +163,8 @@ def updateSettings(req: SettingsUpdateRequest):
             databaseInstance.setInverterCharge(95)
     if req.targetWhistles is not None:
         predictorInstance.recordEvent("resetCooker", req.targetWhistles)
-        
+
+    background_tasks.add_task(broadcastSnapshot)
     return {"status": "success", "message": "Simulation settings synced."}
 
 def executeAction(decision):
@@ -141,7 +202,7 @@ def executeAction(decision):
     twilioInstance.sendWhatsApp(msgText, actionId=actionId, suggestActions=False)
 
 @app.post("/api/sensors/trigger")
-def triggerSensor(req: SensorTriggerRequest):
+def triggerSensor(req: SensorTriggerRequest, background_tasks: BackgroundTasks):
     # Log sensor hit
     event = predictorInstance.recordEvent(req.sensorId, req.value, simulatedTime)
     databaseInstance.logEvent(event)
@@ -153,6 +214,7 @@ def triggerSensor(req: SensorTriggerRequest):
     prediction = predictorInstance.predictNextAction(simulatedTime, isFasting, powerStatus)
 
     if not prediction:
+        background_tasks.add_task(broadcastSnapshot)
         return {
             "status": "logged",
             "message": f"Sensor event '{req.sensorId}' logged. No proactive actions suggested.",
@@ -187,6 +249,7 @@ def triggerSensor(req: SensorTriggerRequest):
         msgText = f"सजाव (Suggest): {decision.get('explanationHindi')} क्या मैं इसे चालू करूँ? (Approve?)"
         twilioInstance.sendWhatsApp(msgText, actionId=decision.get("actionId"), suggestActions=True)
 
+    background_tasks.add_task(broadcastSnapshot)
     return {
         "status": "processed",
         "event": event,
@@ -196,12 +259,13 @@ def triggerSensor(req: SensorTriggerRequest):
     }
 
 @app.post("/api/actions/override")
-def handleActionOverride(req: ActionOverrideRequest):
+def handleActionOverride(req: ActionOverrideRequest, background_tasks: BackgroundTasks):
     if not req.approve:
         rule = bedrockInstance.generatePreferenceRule(req.actionId, simulatedTime, powerStatus)
         vectorStoreInstance.addRule(rule, "override")
         msg = f"प्राथमिकता सहेज ली गई है (Preference saved): '{rule}'. भविष्य में इसे ब्लॉक किया जाएगा।"
         twilioInstance.sendWhatsApp(msg)
+        background_tasks.add_task(broadcastSnapshot)
         return {"status": "declined", "ruleGenerated": rule}
 
     actionId = req.actionId
@@ -234,6 +298,7 @@ def handleActionOverride(req: ActionOverrideRequest):
         decision["deviceCommand"] = "SLEEP_SHUTDOWN"
 
     executeAction(decision)
+    background_tasks.add_task(broadcastSnapshot)
     return {"status": "executed", "decision": decision}
 
 class VectorRuleRequest(BaseModel):

@@ -1,5 +1,14 @@
 import json
+import time
+import logging
+import botocore.exceptions
+from botocore.config import Config
 from Backend.Config.AppConfig import AppConfig
+
+_RETRYABLE_CODES = frozenset({"ThrottlingException", "ServiceUnavailableException", "TooManyRequestsException"})
+_BACKOFF_SEQUENCE = [1, 2, 4]
+_logger = logging.getLogger(__name__)
+
 
 class BedrockService:
     def __init__(self):
@@ -10,13 +19,106 @@ class BedrockService:
         if not AppConfig.mockMode:
             try:
                 import boto3
+                config = Config(
+                    connect_timeout=AppConfig.bedrockConnectTimeoutSeconds,
+                    read_timeout=AppConfig.bedrockReadTimeoutSeconds,
+                    retries={"max_attempts": 0},
+                )
                 self.client = boto3.client(
                     service_name="bedrock-runtime",
-                    region_name=AppConfig.awsRegion
+                    region_name=AppConfig.awsRegion,
+                    config=config,
                 )
                 print("AWS Bedrock client initialized successfully.")
             except Exception as e:
                 print(f"Failed to initialize AWS Bedrock client: {e}. Falling back to mock Bedrock mode.")
+
+    def _logTokenUsage(self, response, modelId):
+        """Log input/output token counts from a successful Bedrock response."""
+        input_tokens = None
+        output_tokens = None
+
+        # Try parsed response body usage dict (Claude Bedrock API shape)
+        usage = None
+        if isinstance(response, dict):
+            usage = response.get("usage")
+        if usage and isinstance(usage, dict):
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+
+        # Fallback: ResponseMetadata headers
+        if input_tokens is None or output_tokens is None:
+            metadata = response.get("ResponseMetadata", {}) if isinstance(response, dict) else {}
+            headers = metadata.get("HTTPHeaders", {})
+            if input_tokens is None:
+                input_tokens = headers.get("x-amzn-bedrock-input-token-count")
+            if output_tokens is None:
+                output_tokens = headers.get("x-amzn-bedrock-output-token-count")
+
+        if input_tokens is None or output_tokens is None:
+            _logger.warning("Bedrock response missing token usage fields for model %s", modelId)
+            return
+
+        _logger.info(
+            "Bedrock token usage | model=%s inputTokens=%s outputTokens=%s",
+            modelId,
+            input_tokens,
+            output_tokens,
+        )
+
+    def _invokeWithRetry(self, modelId, body, maxRetries=None):
+        """Invoke Bedrock model with exponential back-off retry for transient errors."""
+        if maxRetries is None:
+            maxRetries = AppConfig.bedrockMaxRetries
+
+        lastException = None
+        for attempt in range(maxRetries):
+            try:
+                response = self.client.invoke_model(modelId=modelId, body=body)
+                self._logTokenUsage(response, modelId)
+                return response
+            except botocore.exceptions.ClientError as e:
+                code = e.response["Error"]["Code"]
+                if code in _RETRYABLE_CODES:
+                    lastException = e
+                    if attempt < maxRetries - 1:
+                        backoff_idx = min(attempt, len(_BACKOFF_SEQUENCE) - 1)
+                        time.sleep(_BACKOFF_SEQUENCE[backoff_idx])
+                    # loop continues; after exhausting all attempts we re-raise below
+                else:
+                    raise  # non-retryable ClientError: immediate re-raise
+            except Exception:
+                raise  # non-ClientError: immediate re-raise
+        raise lastException
+
+    def _deviceKeywordsMatch(self, rule_content, target_device):
+        """
+        Returns True if any keyword token for target_device appears as a substring
+        in the lowercased rule_content. Case-insensitive. Handles None content gracefully.
+        """
+        content_lower = (rule_content or "").lower()
+        device_lower = (target_device or "").lower()
+
+        # Build keyword token set from known synonym map
+        SYNONYM_MAP = {
+            "geyser":           ["geyser", "heater"],
+            "watermotor":       ["water", "motor", "pump", "watermotor"],
+            "inverterbackup":   ["inverter", "backup", "precharge"],
+            "airconditioner":   ["ac", "air", "conditioner"],
+            "television":       ["television", "tv"],
+        }
+
+        tokens = set()
+        if device_lower in SYNONYM_MAP:
+            tokens.update(SYNONYM_MAP[device_lower])
+        else:
+            # General fallback: split camelCase into lowercase tokens
+            import re
+            parts = re.sub(r'([A-Z])', r' \1', target_device or "").split()
+            tokens.update(p.lower() for p in parts if p)
+            tokens.add(device_lower)
+
+        return any(token in content_lower for token in tokens)
 
     def generateReasoning(self, contextData):
         """
@@ -39,7 +141,14 @@ class BedrockService:
             "Crucially, you are also provided with semantically retrieved RAG rules (user overrides, safety parameters, or cultural laws). "
             "If any retrieved RAG rule has the category '[OVERRIDE]' (which represents explicit user preference rules and blocks, e.g. 'Do not automatically start the water pump motor' or 'Never turn on Geyser'), you MUST respect this constraint. In such cases, you must suppress the action by setting shouldExecute to false and shouldSuggest to false. Explain this suppression in explanationHindi and explanationEnglish. "
             "You must reason over this context and output a structured JSON action decision. "
-            "You must respond with ONLY a valid JSON object. No extra text, no wrapper markdown."
+            "You must respond with ONLY a valid JSON object. No extra text, no wrapper markdown.\n\n"
+            "CONFLICT RESOLUTION PRIORITY HIERARCHY:\n"
+            "Priority 1 (HIGHEST): Explicit negative user overrides — RAG rules with category 'override' containing 'Never', 'Do not', or 'Suppress'. When matched, set shouldExecute=false, shouldSuggest=false, conflictDetected=true, conflictDescription=the winning rule content.\n"
+            "Priority 2: Safety guardrails — RAG rules with category 'safety'. Same suppression effect as Priority 1: set shouldExecute=false, shouldSuggest=false, conflictDetected=true, conflictDescription=the winning rule content.\n"
+            "Priority 3: Cultural/fasting context — isFastingDay=true, festivalName set, pooja hours active.\n"
+            "Priority 4: Routine/sequence predictions from ML predictor.\n"
+            "Priority 5 (LOWEST): Energy optimisation suggestions.\n"
+            "When a higher-priority rule overrules a lower-priority rule, you MUST set conflictDetected=true and conflictDescription to the winning rule content."
         )
 
         prompt = f"""
@@ -49,7 +158,7 @@ class BedrockService:
         Retrieved Grounding RAG Context:
         {ragContextText}
 
-        Respond with a JSON object matching this structure:
+        You must respond with ONLY a valid JSON object matching this exact schema:
         {{
           "shouldExecute": boolean,
           "shouldSuggest": boolean,
@@ -58,7 +167,9 @@ class BedrockService:
           "deviceCommand": "string",
           "explanationEnglish": "string",
           "explanationHindi": "string",
-          "estimatedSavingsWh": number
+          "estimatedSavingsWh": number,
+          "conflictDetected": boolean,
+          "conflictDescription": "string | null"
         }}
         """
 
@@ -76,15 +187,17 @@ class BedrockService:
                 "temperature": 0.2
             })
 
-            response = self.client.invoke_model(
+            response = self._invokeWithRetry(
                 modelId=AppConfig.bedrockModelId,
-                body=body
+                body=body,
             )
 
             responseBody = json.loads(response.get("body").read())
             rawOutputText = responseBody["content"][0]["text"]
             
             parsedOutput = json.loads(rawOutputText.strip())
+            parsedOutput.setdefault("conflictDetected", False)
+            parsedOutput.setdefault("conflictDescription", None)
             return parsedOutput
             
         except Exception as e:
@@ -111,11 +224,13 @@ class BedrockService:
                 "explanationEnglish": "No proactive actions predicted for the current context.",
                 "explanationHindi": "वर्तमान संदर्भ के लिए कोई पूर्व-सक्रिय कार्रवाई नहीं मिली।",
                 "estimatedSavingsWh": 0,
-                "retrievedRagRules": ragContext
+                "retrievedRagRules": ragContext,
+                "conflictDetected": False,
+                "conflictDescription": None,
             }
 
         action = predicted.get("predictedAction")
-        device = predicted.get("targetDevice")
+        device = predicted.get("targetDevice", "")
         command = predicted.get("deviceCommand")
         confidence = predicted.get("confidence", 0.0)
         reason = predicted.get("reason", "")
@@ -127,49 +242,25 @@ class BedrockService:
         explanationHindi = "कन्फर्म की गई गतिविधि: "
         savings = 0
 
-        # RAG feedback logs matching
-        ragSummaries = [r.get("content") for r in ragContext]
-
-        # Check for matching overrides generically
-        for r in ragContext:
-            content = r.get("content", "")
-            cat = r.get("category", "")
-            if cat == "override":
-                content_lower = content.lower()
-                if ("geyser" in content_lower and action == "turnOnGeyser") or \
-                   (("water pump motor" in content_lower or "water motor" in content_lower or "pump" in content_lower) and action == "startWaterMotor") or \
-                   ("inverter" in content_lower and action == "prechargeInverter"):
+        # Unified suppression pass — Priority 1 (override) and Priority 2 (safety)
+        for rule in ragContext:
+            cat = rule.get("category", "")
+            if cat in ("override", "safety"):
+                if self._deviceKeywordsMatch(rule.get("content"), device):
+                    content = rule.get("content", "")
                     return {
                         "shouldExecute": False,
                         "shouldSuggest": False,
                         "actionId": f"suppressed_{action}",
                         "targetDevice": device,
-                        "deviceCommand": "OFF" if action != "prechargeInverter" else "STANDBY",
-                        "explanationEnglish": f"Action suppressed due to RAG-retrieved user override rule: '{content}'.",
-                        "explanationHindi": f"उपयोगकर्ता की प्राथमिकता नियम '{content}' के कारण कार्रवाई रोक दी गई है।",
+                        "deviceCommand": "OFF",
+                        "explanationEnglish": f"Action suppressed due to RAG-retrieved rule: '{content}'.",
+                        "explanationHindi": f"नियम '{content}' के कारण कार्रवाई रोक दी गई है।",
                         "estimatedSavingsWh": 0,
-                        "retrievedRagRules": ragContext
+                        "retrievedRagRules": ragContext,
+                        "conflictDetected": True,
+                        "conflictDescription": content,
                     }
-
-        # Specific safety guardrail mock check
-        overrideDetected = False
-        for rule in ragSummaries:
-            if "Never turn on Geyser" in rule or "Never start a geyser" in rule:
-                overrideDetected = True
-                break
-
-        if overrideDetected and action == "turnOnGeyser":
-            return {
-                "shouldExecute": False,
-                "shouldSuggest": False,
-                "actionId": "suppressedGeyserOverride",
-                "targetDevice": "geyser",
-                "deviceCommand": "OFF",
-                "explanationEnglish": "Geyser activation suppressed due to RAG-retrieved user safety constraint rule: 'Never turn on Geyser when water level is critical'.",
-                "explanationHindi": "सुरक्षा कारणों (पानी के कम स्तर) से गीज़र चालू नहीं किया गया है।",
-                "estimatedSavingsWh": 0,
-                "retrievedRagRules": ragContext
-            }
 
         if action == "turnOnGeyser":
             explanationHindi = "सुबह की हलचल देखकर स्नान के लिए गीज़र चालू कर दिया गया है।"
@@ -216,7 +307,9 @@ class BedrockService:
             "explanationEnglish": explanationEnglish,
             "explanationHindi": explanationHindi,
             "estimatedSavingsWh": savings,
-            "retrievedRagRules": ragContext
+            "retrievedRagRules": ragContext,
+            "conflictDetected": False,
+            "conflictDescription": None,
         }
 
     def generatePreferenceRule(self, actionId, currentTime, powerStatus):
@@ -249,9 +342,9 @@ class BedrockService:
                 ],
                 "temperature": 0.1
             })
-            response = self.client.invoke_model(
+            response = self._invokeWithRetry(
                 modelId=AppConfig.bedrockModelId,
-                body=body
+                body=body,
             )
             responseBody = json.loads(response.get("body").read())
             ruleText = responseBody["content"][0]["text"].strip()
@@ -288,9 +381,9 @@ class BedrockService:
                 ],
                 "temperature": 0.1
             })
-            response = self.client.invoke_model(
+            response = self._invokeWithRetry(
                 modelId=AppConfig.bedrockModelId,
-                body=body
+                body=body,
             )
             responseBody = json.loads(response.get("body").read())
             consolidatedText = responseBody["content"][0]["text"].strip()

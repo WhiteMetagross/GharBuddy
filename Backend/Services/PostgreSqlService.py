@@ -1,6 +1,40 @@
 import os
 import json
+import time
+import logging
 from contextlib import contextmanager
+
+# Module-level retry delays (seconds): 0.5, 1.0, 2.0
+RETRY_DELAYS = [0.5, 1.0, 2.0]
+
+
+class _SlowQueryCursor:
+    """
+    Transparent cursor wrapper that measures wall-clock time around every
+    execute() call and emits a WARNING when elapsed time >= 500 ms.
+    All other cursor attributes are delegated to the wrapped cursor.
+    """
+    SLOW_THRESHOLD_MS = 500
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def execute(self, sql, params=None):
+        t0 = time.monotonic()
+        try:
+            if params is not None:
+                self._cursor.execute(sql, params)
+            else:
+                self._cursor.execute(sql)
+        finally:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            if elapsed_ms >= self.SLOW_THRESHOLD_MS:
+                logging.warning(
+                    f"[DB] SLOW QUERY ({elapsed_ms:.1f}ms): {sql}"
+                )
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
 
 class PostgreSqlService:
     def __init__(self):
@@ -36,23 +70,119 @@ class PostgreSqlService:
     def get_db_connection(self):
         """
         Thread-safe context manager to checkout and checkin database connections from the pool.
+        Includes connection validation, exponential-back-off retry, pool recreation on total
+        failure, clean mock fallback with warning, and slow-query detection via _SlowQueryCursor.
         """
         conn = None
-        if self.postgresMode == "live" and self.pool:
+
+        # Fast-path for mock mode: yield None silently, no retries
+        if self.postgresMode != "live" or not self.pool:
+            yield None
+            return
+
+        conn = self._checkout_with_retry()
+
+        if conn is None:
+            # All retries and pool recreation exhausted — emit MOCK FALLBACK warning
+            # (Requirements 4.1, 4.2, 4.3) and yield None to preserve if conn: pattern
+            logging.warning(
+                "[DB] MOCK FALLBACK — connection unavailable; caller will use in-memory mock data"
+            )
+            yield None
+            return
+
+        # Patch conn.cursor to return slow-query-measuring cursors transparently
+        original_cursor = conn.cursor
+        def slow_cursor(*args, **kwargs):
+            return _SlowQueryCursor(original_cursor(*args, **kwargs))
+        conn.cursor = slow_cursor
+
+        try:
+            yield conn
+        finally:
+            # Restore original cursor method before returning connection to pool
+            try:
+                conn.cursor = original_cursor
+            except Exception:
+                pass
+            try:
+                self.pool.putconn(conn)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Private helpers — connection validation, retry, and pool recreation
+    # ------------------------------------------------------------------
+
+    def _validate_connection(self, conn):
+        """
+        Execute a lightweight SELECT 1 probe on *conn*.
+        Raises the original psycopg2 exception if the connection is stale.
+        Requirements: 1.1, 1.2, 1.3, 1.4
+        """
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+
+    def _checkout_with_retry(self):
+        """
+        Attempt pool.getconn() + _validate_connection() up to 4 times total
+        (1 initial + 3 retries) using the RETRY_DELAYS schedule.
+        On total failure, calls _try_recreate_pool() once.
+        Returns a valid connection or None.
+        Requirements: 2.1–2.6, 3.4
+        """
+        last_exc = None
+        for attempt, delay in enumerate(RETRY_DELAYS + [None], start=1):
             try:
                 conn = self.pool.getconn()
-                yield conn
-            except Exception as e:
-                print(f"PostgreSQL Pool checkout error: {e}")
-                yield None
-            finally:
-                if conn:
-                    try:
-                        self.pool.putconn(conn)
-                    except Exception:
-                        pass
-        else:
-            yield None
+                self._validate_connection(conn)
+                return conn
+            except Exception as exc:
+                last_exc = exc
+                if delay is not None:
+                    logging.warning(
+                        f"[DB] Checkout attempt {attempt} failed ({exc}); retrying in {delay}s"
+                    )
+                    time.sleep(delay)
+
+        # All retries exhausted — attempt pool recreation once (Req 3.4)
+        new_conn = self._try_recreate_pool()
+        if new_conn is not None:
+            return new_conn
+
+        # Emit MOCK FALLBACK warning (Requirements 4.2, 4.3)
+        logging.warning(
+            f"[DB] MOCK FALLBACK — all retries and pool recreation failed. Last error: {last_exc}"
+        )
+        return None
+
+    def _try_recreate_pool(self):
+        """
+        Attempt to rebuild the ThreadedConnectionPool from env-vars.
+        On success: replaces self.pool, sets postgresMode='live', returns a checked-out conn.
+        On failure: logs ERROR and returns None.
+        Requirements: 3.1, 3.2, 3.3
+        """
+        try:
+            from psycopg2.pool import ThreadedConnectionPool
+            new_pool = ThreadedConnectionPool(
+                minconn=1,
+                maxconn=10,
+                host=os.getenv("DB_HOST", "localhost"),
+                port=os.getenv("DB_PORT", "5432"),
+                user=os.getenv("DB_USER", ""),
+                password=os.getenv("DB_PASSWORD", ""),
+                database=os.getenv("DB_NAME", ""),
+                connect_timeout=3,
+            )
+            self.pool = new_pool
+            self.postgresMode = "live"
+            conn = self.pool.getconn()
+            self._validate_connection(conn)
+            return conn
+        except Exception as exc:
+            logging.error(f"[DB] Pool recreation failed: {exc}")
+            return None
 
     def connectDb(self):
         db_host = os.getenv("DB_HOST", "localhost")

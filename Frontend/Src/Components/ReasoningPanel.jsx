@@ -194,6 +194,25 @@ export default function ReasoningPanel({ lastTriggerResult }) {
 
       {/* Reasoning details */}
       <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        {(decision.conflictDetected ?? false) && (
+          <div style={{
+            background: "rgba(245, 158, 11, 0.12)",
+            border: "1px solid rgba(245, 158, 11, 0.35)",
+            borderLeft: "4px solid #f59e0b",
+            borderRadius: "8px",
+            padding: "10px 14px",
+            marginBottom: "4px"
+          }}>
+            <span style={{ fontSize: "13px", fontWeight: "700", color: "#fbbf24" }}>
+              ⚠️ Conflict Resolved
+            </span>
+            {decision.conflictDescription && (
+              <p style={{ fontSize: "12px", color: "#fde68a", marginTop: "4px", lineHeight: "1.4" }}>
+                {decision.conflictDescription}
+              </p>
+            )}
+          </div>
+        )}
         <div>
           <span style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--textMuted)", fontWeight: "700" }}>
             Action Classification
