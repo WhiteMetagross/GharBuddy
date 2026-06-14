@@ -1,0 +1,35 @@
+# Render.com deployment configuration for GharBuddy FastAPI backend
+# https://render.com/docs/infrastructure-as-code
+
+services:
+  - type: web
+    name: gharbuddy-api
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r Backend/requirements.txt
+    startCommand: python -m uvicorn Backend.MainFastApi:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
+    envVars:
+      - key: MOCK_MODE
+        value: "False"
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: gharbuddy
+      - key: AWS_DEFAULT_REGION
+        value: us-east-1
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: BEDROCK_MODEL_ID
+        value: anthropic.claude-3-5-sonnet-20240620-v1:0
+      - key: JWT_SECRET
+        generateValue: true
