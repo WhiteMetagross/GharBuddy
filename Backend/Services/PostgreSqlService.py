@@ -62,7 +62,17 @@ class PostgreSqlService:
         }
         self.mockVectorIndex = []
         self.mockEmbeddingCache = {}
-        
+
+        # Mock regional load shedding schedule: { "MM-DD": [{"start": "HH:MM", "end": "HH:MM", "probability": 0.0-1.0}] }
+        self.mockLoadSheddingSchedule = {
+            "06-13": [{"start": "18:30", "end": "20:00", "probability": 0.85}],
+            "06-14": [{"start": "14:00", "end": "15:30", "probability": 0.70}, {"start": "20:00", "end": "21:30", "probability": 0.90}],
+            "10-12": [{"start": "17:00", "end": "19:00", "probability": 0.95}],
+            "11-08": [{"start": "16:00", "end": "18:00", "probability": 0.60}],
+            "03-06": [{"start": "19:00", "end": "21:00", "probability": 0.80}],
+            "default": [{"start": "18:00", "end": "19:30", "probability": 0.65}],
+        }
+
         self.initializeDefaultRules()
         self.connectDb()
 
@@ -629,3 +639,40 @@ class PostgreSqlService:
                 except Exception as e:
                     print(f"SQL Error in deleteVectorRule: {e}")
         self.mockVectorIndex = [r for r in self.mockVectorIndex if r["content"] != content]
+
+    def getLoadSheddingForecast(self, dateStr: str, currentTimeStr: str) -> dict:
+        """
+        Returns the highest-probability upcoming load shedding window for the given date/time.
+        dateStr format: "MM-DD", currentTimeStr format: "HH:MM:SS"
+        """
+        schedule = self.mockLoadSheddingSchedule.get(dateStr) or self.mockLoadSheddingSchedule.get("default", [])
+
+        try:
+            cur_parts = currentTimeStr.split(":")
+            cur_minutes = int(cur_parts[0]) * 60 + int(cur_parts[1])
+        except Exception:
+            cur_minutes = 0
+
+        # Find the next upcoming slot with highest probability
+        best = None
+        for slot in schedule:
+            try:
+                s_parts = slot["start"].split(":")
+                s_minutes = int(s_parts[0]) * 60 + int(s_parts[1])
+                # Only consider slots starting in the next 2 hours
+                if 0 <= (s_minutes - cur_minutes) <= 120:
+                    if best is None or slot["probability"] > best["probability"]:
+                        best = {**slot, "minutesUntilCut": s_minutes - cur_minutes}
+            except Exception:
+                continue
+
+        if best:
+            return {
+                "predictedCut": True,
+                "startTime": best["start"],
+                "endTime": best["end"],
+                "probability": best["probability"],
+                "minutesUntilCut": best["minutesUntilCut"],
+                "recommendation": "PRECHARGE_INVERTER" if best["probability"] >= 0.70 else "MONITOR"
+            }
+        return {"predictedCut": False, "probability": 0.0}
