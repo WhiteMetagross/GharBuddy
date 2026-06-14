@@ -1,32 +1,106 @@
+"""
+RoutinePredictor — enhanced sequence learning predictor for Indian household routines.
+
+Architecture:
+- Sliding window of last 20 sensor events (session memory)
+- Long-term pattern store: maps (hourSlot, sensorSequence) → (action, hit_count, last_seen)
+- Confidence scoring: base_confidence * frequency_multiplier * recency_multiplier
+- Sequence matching: checks if recent N sensors match stored pattern prefixes
+"""
 import datetime
+import math
+from collections import defaultdict
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Hour slots (0-47 = 30-min buckets per day)
+def _hourToSlot(h: float) -> int:
+    return min(47, int(h * 2))
+
+# Sensor sequence patterns for known Indian household routines
+# Each entry: (trigger_sensors: tuple, action, base_confidence, description)
+ROUTINE_PATTERNS = [
+    # Morning bath routine
+    (("toiletFlush",),             "turnOnGeyser",         0.90, "Toilet flush → geyser pre-heat"),
+    (("bathroomMotion",),          "turnOnGeyser",         0.88, "Bathroom motion → geyser"),
+    (("toiletFlush","bathroomMotion"),"turnOnGeyser",       0.97, "Flush+motion → geyser (strong signal)"),
+
+    # Pooja routine
+    (("poojaRoomMotion",),         "activatePoojaMode",    0.92, "Pooja room motion → dim lights"),
+
+    # Water motor
+    (("waterLevelLow",),           "startWaterMotor",      0.84, "Low water level → start motor"),
+    (("waterMotorRunningLong",),   "stopWaterMotorLeakAlert", 0.97, "Motor overtime → leak alert"),
+
+    # Power cut pre-charge
+    (("powerCutRiskHigh",),        "prechargeInverter",    0.89, "Risk signal → pre-charge"),
+
+    # Study mode
+    (("childrenStudyMotion",),     "activateStudyMode",    0.87, "Study motion → focus mode"),
+
+    # Bedtime
+    (("lateNightQuiet",),          "activateBedtimeRoutine", 0.92, "Night quiet → bedtime"),
+    (("bedroomMotion",),           "activateBedtimeRoutine", 0.88, "Bedroom motion → bedtime check"),
+]
+
+# Time window constraints for each action (hour_start, hour_end)
+ACTION_TIME_WINDOWS = {
+    "turnOnGeyser":         (5.5, 8.5),
+    "activatePoojaMode":    (5.5, 8.0),
+    "startWaterMotor":      (6.5, 8.0),   # morning slot
+    "stopWaterMotorLeakAlert": (0, 24),   # any time
+    "prechargeInverter":    (17.0, 19.5),
+    "activateStudyMode":    (16.5, 20.0),
+    "activateBedtimeRoutine": (21.0, 24.0),
+    "cookerCompletionAlert": (0, 24),
+}
+
+DEVICE_MAP = {
+    "turnOnGeyser":         ("geyser",         "ON",                  "turnOnGeyser"),
+    "activatePoojaMode":    ("poojaLights",     "MEDITATION_DIMS",     "activatePoojaMode"),
+    "startWaterMotor":      ("waterMotor",      "ON",                  "startWaterMotor"),
+    "stopWaterMotorLeakAlert": ("waterMotor",   "OFF",                 "stopWaterMotorLeakAlert"),
+    "prechargeInverter":    ("inverterBackup",  "FAST_CHARGE",         "prechargeInverter"),
+    "activateStudyMode":    ("livingRoomLights","STUDY_FOCUS_BRIGHTNESS","activateStudyMode"),
+    "activateBedtimeRoutine": ("allDevices",    "SLEEP_SHUTDOWN",      "activateBedtimeRoutine"),
+    "cookerCompletionAlert":("speakerSystem",   "ANNOUNCE_WHISTLE",    "cookerCompletionAlert"),
+}
+
 
 class RoutinePredictor:
     def __init__(self):
-        # Local event store for active session windowing (last 60 minutes)
         self.recentEventList = []
-        # Cooking whistle tracker
         self.whistleCount = 0
         self.targetWhistles = 3
 
-    def recordEvent(self, sensorId, value, timestamp=None):
+        # Long-term frequency learning store
+        # key: (hourSlot, frozenset_of_sensors) → {"action": str, "hits": int, "daysSeen": int}
+        self._patternStore = defaultdict(lambda: {"hits": 0, "daysSeen": 0, "lastDayKey": ""})
+
+        # Track which actions were already suggested this session (avoid duplicates)
+        self._recentlyTriggered = set()
+        self._lastResetDay = ""
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def recordEvent(self, sensorId: str, value, timestamp: str = None) -> dict:
         if timestamp is None:
             timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        
-        event = {
-            "sensorId": sensorId,
-            "value": value,
-            "timestamp": timestamp
-        }
+
+        event = {"sensorId": sensorId, "value": value, "timestamp": timestamp}
         self.recentEventList.append(event)
-        
-        # Maintain a sliding window of recent events (keep last 20)
+
         if len(self.recentEventList) > 20:
             self.recentEventList.pop(0)
 
-        # Cooker whistle tracking logic
         if sensorId == "cookerWhistle" and value == "active":
             self.whistleCount += 1
-            print(f"Incremented whistle count. Now at: {self.whistleCount}")
+            print(f"[RoutinePredictor] Whistle #{self.whistleCount}/{self.targetWhistles}")
         elif sensorId == "resetCooker":
             self.whistleCount = 0
             if isinstance(value, int):
@@ -37,118 +111,138 @@ class RoutinePredictor:
     def clearCookingWhistles(self):
         self.whistleCount = 0
 
-    def predictNextAction(self, currentTimeString, isFastingDay=False, powerStatus="GRID"):
+    def predictNextAction(
+        self,
+        currentTimeString: str,
+        isFastingDay: bool = False,
+        powerStatus: str = "GRID",
+    ) -> dict | None:
         """
-        Analyzes the last active sensor timeline and predicts proactive actions.
-        Returns a dictionary: { predictedAction, targetDevice, deviceCommand, confidence, reason }
+        Returns the best predicted action with confidence score, or None.
+        Uses sequence matching + frequency learning + time-window constraints.
         """
-        # Parse time-of-day float for boundary checks (e.g. "06:15:00" -> 6.25)
         try:
             parts = currentTimeString.split(":")
             hourFloat = int(parts[0]) + int(parts[1]) / 60.0
         except Exception:
-            hourFloat = 12.0  # fallback noon
+            hourFloat = 12.0
+
+        # Reset daily trigger deduplication
+        dayKey = currentTimeString[:2]  # hour as proxy for day reset
+        if dayKey != self._lastResetDay and hourFloat < 6.0:
+            self._recentlyTriggered.clear()
+            self._lastResetDay = dayKey
 
         recentSensorIds = [e["sensorId"] for e in self.recentEventList]
+        recentSet = set(recentSensorIds)
 
-        # Use Case 1: Morning Routine (Geyser Automation)
-        # Triggered by morning toilet flush or bathroom motion between 5:30 AM and 8:30 AM
-        if 5.5 <= hourFloat <= 8.5:
-            if "toiletFlush" in recentSensorIds or "bathroomMotion" in recentSensorIds:
-                return {
-                    "predictedAction": "turnOnGeyser",
-                    "targetDevice": "geyser",
-                    "deviceCommand": "ON",
-                    "confidence": 0.94,
-                    "reason": "Toilet flush detected during morning window. Pre-heating bath geyser automatically."
-                }
-
-        # Use Case 2: Pooja Mode
-        # Triggered by pooja room motion or matching exact pooja hours (6:00 AM to 7:00 AM)
-        if 6.0 <= hourFloat <= 7.5:
-            if "poojaRoomMotion" in recentSensorIds:
-                return {
-                    "predictedAction": "activatePoojaMode",
-                    "targetDevice": "poojaLights",
-                    "deviceCommand": "MEDITATION_DIMS",
-                    "confidence": 0.92,
-                    "reason": "Motion detected in Pooja room at morning prayer hour. Setting tranquil ambiance."
-                }
-
-        # Use Case 3: Pressure Cooker Alert
-        # Triggered by cooker whistle pulses
-        if self.whistleCount > 0:
-            if isFastingDay:
-                # Suppress normal cooking prompts on fasting days
-                self.whistleCount = 0
-                return None
-            
+        # Cooker completion (highest priority)
+        if self.whistleCount > 0 and not isFastingDay:
             if self.whistleCount >= self.targetWhistles:
-                # Trigger completion action
-                currentCount = self.whistleCount
-                self.whistleCount = 0 # reset
-                return {
-                    "predictedAction": "cookerCompletionAlert",
-                    "targetDevice": "speakerSystem",
-                    "deviceCommand": f"ANNOUNCE_WHISTLE_COUNT_{currentCount}",
-                    "confidence": 0.98,
-                    "reason": f"Pressure cooker count reached target of {self.targetWhistles} whistles."
-                }
+                count = self.whistleCount
+                self.whistleCount = 0
+                return self._buildResult(
+                    "cookerCompletionAlert",
+                    0.98,
+                    f"Pressure cooker reached {self.targetWhistles} whistles."
+                )
+            # Active cooking: give partial progress signal
+            progress = self.whistleCount / max(self.targetWhistles, 1)
+            return self._buildResult(
+                "cookerCompletionAlert",
+                0.5 + progress * 0.3,
+                f"Cooker active: {self.whistleCount}/{self.targetWhistles} whistles."
+            )
+        elif self.whistleCount > 0 and isFastingDay:
+            self.whistleCount = 0
+            return None
 
-        # Use Case 4: Water Motor Automated Cycles
-        # Daily schedules at 7:00 AM & 6:00 PM
-        if (6.9 <= hourFloat <= 7.3) or (17.9 <= hourFloat <= 18.3):
-            if "waterLevelLow" in recentSensorIds or "motorTimerTrigger" in recentSensorIds:
-                return {
-                    "predictedAction": "startWaterMotor",
-                    "targetDevice": "waterMotor",
-                    "deviceCommand": "ON",
-                    "confidence": 0.82,
-                    "reason": "Scheduled motor window reached and low water level detected. Starting motor."
-                }
-        
-        # Leak detection scenario (motor running for long duration without stop)
-        if "waterMotorRunningLong" in recentSensorIds:
-            return {
-                "predictedAction": "stopWaterMotorLeakAlert",
-                "targetDevice": "waterMotor",
-                "deviceCommand": "OFF",
-                "confidence": 0.96,
-                "reason": "Water motor has exceeded safety runtime. Stopping motor to prevent overflow/leak."
-            }
+        # Sequence pattern matching
+        best = None
+        bestScore = 0.0
 
-        # Use Case 5: Power-Cut Pre-charge
-        # Pre-charges inverter before predicted cuts (e.g. load shedding expected 18:30)
-        if 18.0 <= hourFloat <= 18.75:
-            if powerStatus == "GRID" and "powerCutRiskHigh" in recentSensorIds:
-                return {
-                    "predictedAction": "prechargeInverter",
-                    "targetDevice": "inverterBackup",
-                    "deviceCommand": "FAST_CHARGE",
-                    "confidence": 0.89,
-                    "reason": "High power-cut probability predicted for evening load shedding window. Pre-charging backup batteries."
-                }
+        for (triggerSensors, action, baseConf, desc) in ROUTINE_PATTERNS:
+            # Skip if outside time window
+            window = ACTION_TIME_WINDOWS.get(action)
+            if window and not (window[0] <= hourFloat < window[1]):
+                continue
 
-        # Use Case 6: Study Quiet Mode & Bedtime Wind-Down
-        # Evening study window (17:00 - 19:00) or Bedtime (21:30 - 23:30)
-        if 17.0 <= hourFloat <= 19.0:
-            if "childrenStudyMotion" in recentSensorIds:
-                return {
-                    "predictedAction": "activateStudyMode",
-                    "targetDevice": "livingRoomLights",
-                    "deviceCommand": "STUDY_FOCUS_BRIGHTNESS",
-                    "confidence": 0.86,
-                    "reason": "Study hours detected. Dimming television volume and adjusting lights for focus."
-                }
-        
-        if 21.5 <= hourFloat <= 23.5:
-            if "bedroomMotion" in recentSensorIds or "lateNightQuiet" in recentSensorIds:
-                return {
-                    "predictedAction": "activateBedtimeRoutine",
-                    "targetDevice": "allDevices",
-                    "deviceCommand": "SLEEP_SHUTDOWN",
-                    "confidence": 0.91,
-                    "reason": "Bedtime motion patterns detected. Turning off TVs and preparing security perimeter."
-                }
+            # Skip fasting-day cooking actions
+            if isFastingDay and action in ("startWaterMotor", "cookerCompletionAlert"):
+                continue
 
-        return None
+            # Skip power-charge if already on inverter
+            if action == "prechargeInverter" and powerStatus == "INVERTER":
+                continue
+
+            # Check if trigger sensors are in recent events
+            triggerSet = set(triggerSensors)
+            matchCount = len(triggerSet & recentSet)
+            if matchCount == 0:
+                continue
+
+            # Sequence match score: fraction of trigger sensors matched
+            matchRatio = matchCount / len(triggerSet)
+
+            # Frequency multiplier from learning store
+            slotKey = _hourToSlot(hourFloat)
+            storeKey = (slotKey, frozenset(triggerSensors))
+            stored = self._patternStore[storeKey]
+            freqMultiplier = 1.0 + math.log1p(stored.get("hits", 0)) * 0.05
+
+            # Recency multiplier: boost if last event matches trigger
+            lastSensor = recentSensorIds[-1] if recentSensorIds else ""
+            recencyBoost = 1.1 if lastSensor in triggerSet else 1.0
+
+            score = baseConf * matchRatio * freqMultiplier * recencyBoost
+            score = min(0.99, score)
+
+            if score > bestScore:
+                bestScore = score
+                best = (action, score, desc, storeKey)
+
+        if best is None:
+            return None
+
+        action, score, desc, storeKey = best
+
+        # Avoid re-triggering same action in same session window
+        sessionKey = f"{action}_{int(hourFloat)}"
+        if sessionKey in self._recentlyTriggered:
+            return None
+        self._recentlyTriggered.add(sessionKey)
+
+        # Update frequency store (learning)
+        self._patternStore[storeKey]["hits"] += 1
+
+        return self._buildResult(action, score, desc)
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _buildResult(self, action: str, confidence: float, reason: str) -> dict:
+        mapping = DEVICE_MAP.get(action, (action, "ON", action))
+        return {
+            "predictedAction": action,
+            "targetDevice": mapping[0],
+            "deviceCommand": mapping[1],
+            "confidence": round(confidence, 3),
+            "reason": reason,
+            "sequenceLearningHits": self._patternStore.get(
+                next((k for k in self._patternStore if action in str(k)), None),
+                {}
+            ).get("hits", 0),
+        }
+
+    def getPatternStats(self) -> list:
+        """Returns learned pattern frequencies — for analytics/debugging."""
+        stats = []
+        for (slot, sensors), data in self._patternStore.items():
+            if data["hits"] > 0:
+                stats.append({
+                    "hourSlot": slot / 2,  # convert back to hours
+                    "sensors": list(sensors),
+                    "hits": data["hits"],
+                })
+        return sorted(stats, key=lambda x: x["hits"], reverse=True)

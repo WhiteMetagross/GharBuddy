@@ -79,5 +79,40 @@ export const BackendService = {
     const res = await fetch(`${baseUrl}/api/vectors`);
     if (!res.ok) throw new Error("Failed to fetch vector rules");
     return res.json();
-  }
+  },
+
+  async getCaregiverStatus() {
+    const res = await fetch(`${baseUrl}/api/safety/caregiver`);
+    if (!res.ok) throw new Error("Failed to fetch caregiver status");
+    return res.json();
+  },
+
+  async resetCaregiverMonitor() {
+    const res = await fetch(`${baseUrl}/api/safety/caregiver/reset`, { method: "POST" });
+    if (!res.ok) throw new Error("Failed to reset caregiver monitor");
+    return res.json();
+  },
+
+  async transcribeVoice(audioBlob) {
+    const formData = new FormData();
+    formData.append("audio", audioBlob, "recording.webm");
+    const res = await fetch(`${baseUrl}/api/voice/transcribe`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) throw new Error("Failed to transcribe voice");
+    return res.json();
+  },
+
+  async getLoadSheddingRisk() {
+    const res = await fetch(`${baseUrl}/api/inverter/load-shedding-risk`);
+    if (!res.ok) throw new Error("Failed to fetch load shedding risk");
+    return res.json();
+  },
+
+  async getLoadSheddingSchedule() {
+    const res = await fetch(`${baseUrl}/api/inverter/schedule`);
+    if (!res.ok) throw new Error("Failed to fetch schedule");
+    return res.json();
+  },
 };

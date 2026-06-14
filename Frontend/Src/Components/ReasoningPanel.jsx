@@ -5,6 +5,7 @@ export default function ReasoningPanel({ lastTriggerResult }) {
   const [showRawContext, setShowRawContext] = useState(false);
   const [showRawOutput, setShowRawOutput] = useState(false);
   const [showRulesList, setShowRulesList] = useState(false);
+  const [ragTab, setRagTab] = useState("rules"); // "rules" | "prompt"
   
   // Rule form states
   const [newRuleText, setNewRuleText] = useState("");
@@ -241,31 +242,136 @@ export default function ReasoningPanel({ lastTriggerResult }) {
         </div>
       </div>
 
-      {/* RAG Grounding Rules Panel */}
-      <div style={{ background: "rgba(255,255,255,0.02)", padding: "12px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.04)" }}>
-        <span style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--textMuted)", fontWeight: "700", display: "block", marginBottom: "6px" }}>
-          📡 Retrieved Grounding RAG Context (from Vector DB)
-        </span>
-        {ragContext && ragContext.length > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {ragContext.map((rule, idx) => (
-              <div key={idx} style={{ 
-                background: "rgba(0,0,0,0.15)", 
-                padding: "8px", 
-                borderRadius: "6px", 
-                fontSize: "12px", 
-                borderLeft: `3px solid ${rule.category === 'cultural' ? '#a855f7' : rule.category === 'safety' ? 'var(--colorDanger)' : 'var(--colorOrange)'}` 
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", color: "var(--textSecondary)", fontSize: "10px", marginBottom: "2px" }}>
-                  <span style={{ textTransform: "uppercase", fontWeight: "700" }}>[{rule.category}]</span>
-                  <span>Similarity: {Math.round(rule.similarity * 100)}%</span>
-                </div>
-                <div style={{ color: "white" }}>{rule.content}</div>
-              </div>
-            ))}
+      {/* RAG Similarity Score Visualizer — tabbed panel */}
+      <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.04)", overflow: "hidden" }}>
+        {/* Tab headers */}
+        <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+          {[
+            { key: "rules", label: "📡 RAG Rules" },
+            { key: "prompt", label: "🔍 Prompt Inspector" },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setRagTab(tab.key)}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                background: ragTab === tab.key ? "rgba(52,152,219,0.1)" : "none",
+                border: "none",
+                borderBottom: ragTab === tab.key ? "2px solid #3498db" : "2px solid transparent",
+                color: ragTab === tab.key ? "#3498db" : "var(--textMuted)",
+                fontSize: "11px",
+                fontWeight: "700",
+                cursor: "pointer",
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                fontFamily: "var(--fontFamily)",
+                transition: "all 0.2s ease"
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* RAG Rules tab */}
+        {ragTab === "rules" && (
+          <div style={{ padding: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            {ragContext && ragContext.length > 0 ? (
+              ragContext.map((rule, idx) => {
+                const simPct = Math.round((rule.similarity || 0) * 100);
+                const isOverride = rule.category === "override";
+                const isSafety = rule.category === "safety";
+                const isCultural = rule.category === "cultural";
+                const didSuppress = decision.conflictDetected && decision.conflictDescription === rule.content;
+                const accentColor = isOverride ? "#ec7063" : isSafety ? "#f39c12" : isCultural ? "#a855f7" : "var(--colorOrange)";
+
+                return (
+                  <div key={idx} style={{
+                    background: didSuppress ? "rgba(236,112,99,0.08)" : "rgba(0,0,0,0.15)",
+                    padding: "10px",
+                    borderRadius: "8px",
+                    borderLeft: `3px solid ${accentColor}`,
+                    position: "relative"
+                  }}>
+                    {/* Header row */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                      <span style={{ fontSize: "10px", fontWeight: "800", color: accentColor, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                        [{rule.category}]
+                        {didSuppress && <span style={{ marginLeft: "6px", color: "#ec7063" }}>⛔ SUPPRESSED ACTION</span>}
+                        {!didSuppress && simPct >= 80 && <span style={{ marginLeft: "6px", color: "#26c281" }}>✅ PERMITTED</span>}
+                      </span>
+                      <span style={{ fontSize: "11px", fontWeight: "700", color: simPct >= 80 ? "#26c281" : simPct >= 60 ? "#ffc837" : "var(--textMuted)" }}>
+                        {simPct}%
+                      </span>
+                    </div>
+
+                    {/* Similarity bar */}
+                    <div style={{ height: "3px", background: "rgba(255,255,255,0.05)", borderRadius: "2px", marginBottom: "6px", overflow: "hidden" }}>
+                      <div style={{
+                        height: "100%",
+                        width: `${simPct}%`,
+                        background: simPct >= 80 ? "#26c281" : simPct >= 60 ? "#ffc837" : "#ec7063",
+                        borderRadius: "2px",
+                        transition: "width 0.6s ease"
+                      }} />
+                    </div>
+
+                    {/* Rule content */}
+                    <div style={{ fontSize: "12px", color: didSuppress ? "#fca5a5" : "var(--textSecondary)", lineHeight: "1.4" }}>
+                      {rule.content}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <p style={{ fontSize: "11px", color: "var(--textMuted)", textAlign: "center", padding: "8px 0" }}>
+                No matching rules retrieved for this context.
+              </p>
+            )}
           </div>
-        ) : (
-          <p style={{ fontSize: "11px", color: "var(--textMuted)" }}>No matching rules retrieved for this context.</p>
+        )}
+
+        {/* Prompt Inspector tab */}
+        {ragTab === "prompt" && (
+          <div style={{ padding: "12px" }}>
+            <div style={{ fontSize: "11px", color: "var(--textMuted)", marginBottom: "8px" }}>
+              Final compiled Bedrock context packet sent to Claude:
+            </div>
+            <pre style={{
+              background: "#060709",
+              padding: "10px",
+              borderRadius: "8px",
+              fontSize: "10px",
+              color: "#818cf8",
+              overflowX: "auto",
+              overflowY: "auto",
+              maxHeight: "220px",
+              lineHeight: "1.5",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word"
+            }}>
+              {JSON.stringify({
+                currentTime: lastTriggerResult?.event?.timestamp,
+                prediction: {
+                  action: prediction?.predictedAction,
+                  confidence: prediction?.confidence,
+                  reason: prediction?.reason,
+                },
+                retrievedRules: ragContext?.map(r => ({
+                  category: r.category,
+                  similarity: Math.round((r.similarity || 0) * 100) + "%",
+                  content: r.content
+                })),
+                bedrockDecision: {
+                  shouldExecute: decision.shouldExecute,
+                  shouldSuggest: decision.shouldSuggest,
+                  actionId: decision.actionId,
+                  conflictDetected: decision.conflictDetected ?? false,
+                }
+              }, null, 2)}
+            </pre>
+          </div>
         )}
       </div>
 
@@ -281,7 +387,7 @@ export default function ReasoningPanel({ lastTriggerResult }) {
             onClick={() => setShowRawContext(!showRawContext)}
             style={{ display: "flex", justifyContent: "space-between", width: "100%", background: "none", border: "none", color: "var(--textSecondary)", fontSize: "12px", cursor: "pointer", padding: "4px 0" }}
           >
-            <span>{showRawContext ? "▼" : "▶"} Show Bedrock Ingestion Context Packet</span>
+            <span>{showRawContext ? "▼" : "▶"} Show Raw Sensor Event</span>
             <span>JSON</span>
           </button>
           {showRawContext && (

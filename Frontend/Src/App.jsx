@@ -7,6 +7,7 @@ import ReasoningPanel from "./Components/ReasoningPanel";
 import WhatsAppMock from "./Components/WhatsAppMock";
 import EnergyTracker from "./Components/EnergyTracker";
 import HouseholdMap from "./Components/HouseholdMap";
+import VoiceWidget from "./Components/VoiceWidget";
 
 export default function App() {
   const [devices, setDevices] = useState({});
@@ -193,7 +194,7 @@ export default function App() {
         <div className="columnLeft">
           <HouseholdMap devices={devices} systemState={systemState} lastTriggerResult={lastTriggerResult} onToggleDevice={handleToggleDevice} />
           <DeviceGrid devices={devices} onToggleDevice={handleToggleDevice} />
-          
+          <VoiceWidget />
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
             <EnergyTracker energyStats={energyStats} />
             <SensorSimulator systemState={systemState} onStateChange={handleStateChange} />

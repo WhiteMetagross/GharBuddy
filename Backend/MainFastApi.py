@@ -1,12 +1,14 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
 import json as _json
+import tempfile
+import os as _os
 
 from Backend.Models.IndianCalendar import IndianCalendar
 from Backend.Models.RoutinePredictor import RoutinePredictor
@@ -14,6 +16,8 @@ from Backend.Services.DatabaseService import DatabaseService
 from Backend.Services.TwilioService import TwilioService
 from Backend.Services.BedrockService import BedrockService
 from Backend.Services.VectorStoreService import VectorStoreService
+from Backend.Services.CaregiverMonitor import CaregiverMonitor
+from Backend.Services.LoadSheddingCalendar import LoadSheddingCalendar
 
 HEARTBEAT_INTERVAL = 30
 
@@ -60,7 +64,9 @@ predictorInstance = RoutinePredictor()
 databaseInstance = DatabaseService()
 vectorStoreInstance = VectorStoreService(databaseInstance.pgService)
 twilioInstance = TwilioService()
+caregiverMonitor = CaregiverMonitor(twilioInstance, databaseInstance)
 bedrockInstance = BedrockService()
+loadSheddingCalendar = LoadSheddingCalendar()
 
 # Global state trackers for simulated environments
 simulatedTime = "06:00:00"
@@ -164,6 +170,9 @@ def updateSettings(req: SettingsUpdateRequest, background_tasks: BackgroundTasks
     if req.targetWhistles is not None:
         predictorInstance.recordEvent("resetCooker", req.targetWhistles)
 
+    # Check morning anomaly whenever time is updated
+    caregiverMonitor.checkMorningAnomalyAlert(simulatedTime, calendarInstance.getCurrentDateString())
+
     background_tasks.add_task(broadcastSnapshot)
     return {"status": "success", "message": "Simulation settings synced."}
 
@@ -206,6 +215,25 @@ def triggerSensor(req: SensorTriggerRequest, background_tasks: BackgroundTasks):
     # Log sensor hit
     event = predictorInstance.recordEvent(req.sensorId, req.value, simulatedTime)
     databaseInstance.logEvent(event)
+
+    # Proactive inverter pre-charge check via load shedding calendar
+    loadRisk = loadSheddingCalendar.getPredictedRisk(
+        calendarInstance.getCurrentDateString(), simulatedTime
+    )
+    if loadRisk["shouldPrecharge"] and powerStatus == "GRID":
+        currentDevices = databaseInstance.getDeviceStates()
+        inverterStatus = currentDevices.get("inverterBackup", {}).get("status", "")
+        if inverterStatus not in ("FAST_CHARGE",):
+            loadMsg = (
+                f"⚡ लोड शेडिंग चेतावनी (Load Shedding Alert): "
+                f"अगले 30 मिनट में बिजली कटौती की संभावना {int(loadRisk['riskScore']*100)}% है। "
+                f"(Power cut risk: {int(loadRisk['riskScore']*100)}% — Pre-charging inverter.)"
+            )
+            twilioInstance.sendWhatsApp(loadMsg, actionId="loadSheddingAutoPrecharge", suggestActions=False)
+
+    # Caregiver anomaly check
+    caregiverMonitor.recordMotionEvent(req.sensorId, simulatedTime)
+    caregiverMonitor.checkMorningAnomalyAlert(simulatedTime, calendarInstance.getCurrentDateString())
 
     isFasting = calendarInstance.isFastingToday()
     festivalInfo = calendarInstance.getFestivalStatus()
@@ -328,3 +356,115 @@ def consolidateVectorRules():
         return {"status": "success", "consolidatedCount": count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/safety/caregiver")
+def getCaregiverStatus():
+    return caregiverMonitor.getStatus()
+
+@app.post("/api/safety/caregiver/reset")
+def resetCaregiverMonitor():
+    caregiverMonitor.resetForTesting()
+    return {"status": "success", "message": "Caregiver monitor reset."}
+
+# Voice intent → device action mapping
+VOICE_INTENT_MAP = {
+    "geyser on": ("toggleDevice", "geyser", "ON"),
+    "geyser band karo": ("toggleDevice", "geyser", "ON"),
+    "geyser chalu": ("toggleDevice", "geyser", "ON"),
+    "geyser off": ("toggleDevice", "geyser", "OFF"),
+    "geyser band": ("toggleDevice", "geyser", "OFF"),
+    "batti on": ("toggleDevice", "livingRoomLights", "ON"),
+    "lights on": ("toggleDevice", "livingRoomLights", "ON"),
+    "batti off": ("toggleDevice", "livingRoomLights", "OFF"),
+    "lights off": ("toggleDevice", "livingRoomLights", "OFF"),
+    "pooja mode": ("sensor", "poojaRoomMotion", "active"),
+    "pooja": ("sensor", "poojaRoomMotion", "active"),
+    "motor on": ("toggleDevice", "waterMotor", "ON"),
+    "motor chalu": ("toggleDevice", "waterMotor", "ON"),
+    "motor off": ("toggleDevice", "waterMotor", "OFF"),
+    "motor band": ("toggleDevice", "waterMotor", "OFF"),
+    "inverter charge": ("sensor", "powerCutRiskHigh", "active"),
+    "so jao": ("sensor", "lateNightQuiet", "active"),
+    "bedtime": ("sensor", "lateNightQuiet", "active"),
+    "padhai mode": ("sensor", "childrenStudyMotion", "active"),
+    "study mode": ("sensor", "childrenStudyMotion", "active"),
+    "tv on": ("toggleDevice", "television", "ON"),
+    "tv off": ("toggleDevice", "television", "OFF"),
+    "ac on": ("toggleDevice", "airConditioner", "ON"),
+    "ac off": ("toggleDevice", "airConditioner", "OFF"),
+}
+
+def matchVoiceIntent(transcript: str):
+    lower = transcript.lower().strip()
+    for phrase, action in VOICE_INTENT_MAP.items():
+        if phrase in lower:
+            return action, phrase
+    return None, None
+
+@app.post("/api/voice/transcribe")
+async def transcribeVoice(audio: UploadFile = File(...)):
+    transcript = ""
+    whisperAvailable = False
+    try:
+        import whisper
+        whisperAvailable = True
+    except ImportError:
+        pass
+
+    audio_bytes = await audio.read()
+
+    if whisperAvailable and len(audio_bytes) > 1000:
+        try:
+            model = whisper.load_model("tiny")
+            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+            result = model.transcribe(tmp_path, language="hi", task="transcribe")
+            transcript = result.get("text", "").strip()
+            _os.unlink(tmp_path)
+        except Exception as e:
+            transcript = ""
+            print(f"Whisper transcription error: {e}")
+
+    if not transcript:
+        transcript = audio.filename or ""
+        for ext in [".webm", ".wav", ".mp3", ".ogg", ".m4a"]:
+            transcript = transcript.replace(ext, "")
+        transcript = transcript.replace("_", " ").replace("-", " ").strip()
+
+    action, matchedPhrase = matchVoiceIntent(transcript)
+    if not action:
+        return {"status": "no_match", "transcript": transcript,
+                "message": "No device command matched.", "executed": False}
+
+    actionType, param1, param2 = action
+    if actionType == "toggleDevice":
+        databaseInstance.updateDeviceState(param1, param2)
+        return {"status": "executed", "transcript": transcript,
+                "matchedPhrase": matchedPhrase, "action": f"Toggled {param1} → {param2}", "executed": True}
+    elif actionType == "sensor":
+        event = predictorInstance.recordEvent(param1, param2, simulatedTime)
+        databaseInstance.logEvent(event)
+        return {"status": "executed", "transcript": transcript,
+                "matchedPhrase": matchedPhrase, "action": f"Triggered sensor {param1}", "executed": True}
+
+    return {"status": "error", "transcript": transcript, "executed": False}
+
+@app.get("/api/inverter/load-shedding-risk")
+def getLoadSheddingRisk():
+    return loadSheddingCalendar.getPredictedRisk(
+        calendarInstance.getCurrentDateString(), simulatedTime
+    )
+
+@app.get("/api/inverter/schedule")
+def getLoadSheddingSchedule():
+    return loadSheddingCalendar.getSchedule()
+
+class LoadSheddingScheduleRequest(BaseModel):
+    date: str
+    slots: list
+
+@app.post("/api/inverter/schedule")
+def addLoadSheddingSchedule(req: LoadSheddingScheduleRequest):
+    loadSheddingCalendar.addCustomSchedule(req.date, [tuple(s) for s in req.slots])
+    return {"status": "success", "date": req.date}

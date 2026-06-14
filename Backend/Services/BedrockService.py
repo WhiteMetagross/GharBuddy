@@ -242,6 +242,28 @@ class BedrockService:
         explanationHindi = "कन्फर्म की गई गतिविधि: "
         savings = 0
 
+
+        # Safety guardrail: geyser requires recent motion confirmation (Issue #17)
+        recentEvents = context.get("recentSensorEvents", [])
+        recentSensorIdList = [e.get("sensorId", "") for e in recentEvents]
+        MOTION_SENSOR_IDS = {"bathroomMotion", "bedroomMotion", "toiletFlush", "poojaRoomMotion", "childrenStudyMotion"}
+        hasRecentMotion = any(sid in MOTION_SENSOR_IDS for sid in recentSensorIdList)
+
+        if action in ("turnOnGeyser",) and not hasRecentMotion and len(recentEvents) >= 3:
+            return {
+                "shouldExecute": False,
+                "shouldSuggest": True,
+                "actionId": "geyserMotionGuardrail",
+                "targetDevice": "geyser",
+                "deviceCommand": "ON",
+                "explanationEnglish": "Geyser activation requires recent motion confirmation for safety. No motion detected in recent sensor history. Awaiting user confirmation.",
+                "explanationHindi": "सुरक्षा जाँच: गीज़र चालू करने से पहले हाल की हलचल की पुष्टि आवश्यक है। कोई हलचल नहीं मिली — कृपया पुष्टि करें।",
+                "estimatedSavingsWh": 0,
+                "retrievedRagRules": ragContext,
+                "conflictDetected": True,
+                "conflictDescription": "Safety guardrail: geyser requires recent motion confirmation."
+            }
+
         # Unified suppression pass — Priority 1 (override) and Priority 2 (safety)
         for rule in ragContext:
             cat = rule.get("category", "")
