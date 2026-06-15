@@ -1,0 +1,58 @@
+databases:
+  - name: gharbuddy-db
+    databaseName: gharbuddy
+    plan: free
+
+services:
+  - type: web
+    name: gharbuddy-api
+    env: python
+    buildCommand: pip install -r Backend/requirements.txt
+    startCommand: python -m uvicorn Backend.MainFastApi:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
+    envVars:
+      - key: MOCK_MODE
+        value: "False"
+      - key: DB_HOST
+        fromDatabase:
+          name: gharbuddy-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: gharbuddy-db
+          property: port
+      - key: DB_USER
+        fromDatabase:
+          name: gharbuddy-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: gharbuddy-db
+          property: password
+      - key: DB_NAME
+        fromDatabase:
+          name: gharbuddy-db
+          property: database
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        value: "whatsapp:+14155238886"
+      - key: USER_PHONE_NUMBER
+        value: "whatsapp:+919142431470"
+      - key: JWT_SECRET
+        generateValue: true
+
+  - type: static
+    name: gharbuddy-frontend
+    env: static
+    buildCommand: cd Frontend && npm install && npm run build
+    publishPath: Frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: gharbuddy-api
+          property: host

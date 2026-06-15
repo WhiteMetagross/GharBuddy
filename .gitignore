@@ -18,3 +18,12 @@ venv/
 .idea/
 .gemini/
 .kiro/
+
+# ML models and documentation
+PRD.docx
+workload_b.md
+workload_c.md
+Backend/Data/train_lstm.py
+Backend/Data/routine_lstm.onnx
+Backend/Data/routine_lstm.onnx.data
+
