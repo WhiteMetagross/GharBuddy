@@ -1,0 +1,141 @@
+@startuml GharBuddy_Sequence_Morning_Routine
+
+skinparam BackgroundColor         #F8F9FA
+skinparam DefaultFontName         Calibri
+skinparam DefaultFontSize         12
+skinparam roundcorner             12
+skinparam ArrowColor              #475569
+skinparam ArrowThickness          2
+skinparam sequenceArrowThickness  2
+skinparam SequenceBoxBorderColor  #475569
+
+skinparam actor {
+    BackgroundColor  #D1FAE5
+    BorderColor      #059669
+    FontColor        #1E293B
+}
+
+skinparam participant {
+    BackgroundColor  #DBEAFE
+    BorderColor      #2563EB
+    FontColor        #1E293B
+}
+
+title <size:18><b>GharBuddy — Morning Routine Automation</b></size>\n<i>Sequence Diagram: Proactive Geyser Pre-Heat from Toilet Flush</i>
+
+actor User as user
+
+box "Frontend" #EFF6FF
+    participant "React Client" as client
+    participant "SensorSimulator" as sim
+end box
+
+box "FastAPI Backend" #F0FDF4
+    participant "FastAPI Server" as server
+    participant "CaregiverMonitor" as caregiver
+    participant "AuthService" as auth
+end box
+
+box "Context Engine" #FFF7ED
+    participant "RoutinePredictor\n(LSTM / ONNX)" as lstm
+    participant "IndianCalendar" as calendar
+end box
+
+box "AI Brain" #FDF4FF
+    participant "VectorStoreService\n(pgvector RAG)" as vector
+    participant "BedrockService\n(Claude 3.5 Sonnet)" as bedrock
+end box
+
+box "Infrastructure" #FFF1F2
+    participant "PostgreSQL DB" as db
+    participant "Twilio WhatsApp" as twilio
+    participant "IoT Core Shadow" as iot
+end box
+
+== Authentication ==
+user -> client : Login with credentials
+client -> server : POST /api/auth/login
+server -> auth : validateCredentials()
+auth -> db : SELECT Users WHERE username=...
+db --> auth : user record + hashed password
+auth --> server : JWT token (HS256, 24h TTL)
+server --> client : { access_token, role: "admin" }
+
+== Morning Sensor Trigger (06:06 AM) ==
+user -> sim : Trigger "Toilet Flush" sensor
+sim -> client : Fire toiletFlush event
+client -> server : POST /api/sensors/trigger\n{ sensorId: "toiletFlush", value: "active" }\nAuthorization: Bearer <token>
+activate server
+
+server -> caregiver : recordMotionEvent("toiletFlush", "06:06:00")
+note right of caregiver
+    Morning window 5–10 AM ✓
+    morningMotionDetected = true
+    alertFired = false
+end note
+
+server -> calendar : isFastingDay() / getFestivalName()
+calendar --> server : { isFasting: false, festival: null }
+
+server -> lstm : recordEvent({sensorId, time, date})
+server -> lstm : predictNextAction(eventHistory)
+activate lstm
+lstm -> lstm : Run ONNX LSTM model\nover 30-day event sequence
+lstm --> server : { predictedAction: "turnOnGeyser",\n  confidence: 0.94 }
+deactivate lstm
+
+server -> vector : querySimilarRules("Morning toilet flush, 06:06 AM, weekday")
+activate vector
+vector -> db : pgvector cosine similarity\n(SELECT FROM VectorIndex ORDER BY embedding <=> ?)
+db --> vector : No override matching (empty result set)
+vector --> server : ragContext: []
+deactivate vector
+
+server -> bedrock : generateReasoning(situationPacket)
+note right of bedrock
+    Packet includes:
+    - time: 06:06:00 (weekday)
+    - predictedAction: turnOnGeyser (conf 0.94)
+    - ragContext: [] (no overrides)
+    - isFasting: false
+    - powerStatus: GRID
+end note
+activate bedrock
+bedrock --> server : {\n  shouldExecute: true,\n  actionId: "turnOnGeyser",\n  confidence: 0.94,\n  reason: "Morning routine detected",\n  explanationHindi: "गीज़र चालू कर दिया गया",\n  energySavedWh: 0\n}
+deactivate bedrock
+
+server -> db : UPDATE Devices SET status="ON" WHERE deviceId="geyser"
+server -> iot : PutThingShadow(geyser → ON)
+iot --> server : Shadow update acknowledged
+
+server -> twilio : sendWhatsApp("गीज़र चालू कर दिया गया\nसुबह 6:06 — स्नान की तैयारी के लिए")
+twilio --> user : WhatsApp alert delivered
+
+server -> client : broadcastSnapshot() via WebSocket\n{ devices, systemState, energyStats, notifications }
+client --> user : Digital Twin updates — Geyser shown as ON\nReasoning Panel shows decision + Hindi explanation
+deactivate server
+
+== User Override / Decline (Rule Learning) ==
+user -> client : Click [Decline / Override] on Reasoning Panel
+client -> server : POST /api/actions/override\n{ actionId: "turnOnGeyser", approve: false }
+activate server
+
+server -> bedrock : generatePreferenceRule({\n  action: "turnOnGeyser",\n  approved: false,\n  time: "06:06",\n  context: "Morning weekday"\n})
+activate bedrock
+bedrock --> server : "Do not turn on geyser before 06:30 AM on weekdays"
+deactivate bedrock
+
+server -> vector : addRule({\n  content: "Do not turn on geyser before 06:30 AM on weekdays",\n  category: "override"\n})
+activate vector
+vector -> bedrock : embedText(ruleContent)
+bedrock --> vector : 1536-dim vector embedding
+vector -> db : INSERT INTO VectorIndex (content, vector, category)
+db --> vector : Row inserted (ruleId: 42)
+vector --> server : { ruleId: 42, saved: true }
+deactivate vector
+
+server -> client : { status: "override_saved", ruleId: 42 }
+client --> user : "Preference saved — this action will\nnot auto-execute before 06:30 AM"
+deactivate server
+
+@enduml

@@ -1,0 +1,71 @@
+@startuml GharBuddy_Activity_RAG_Rule_Consolidation
+
+skinparam BackgroundColor         #F8F9FA
+skinparam DefaultFontName         Calibri
+skinparam DefaultFontSize         12
+skinparam roundcorner             12
+skinparam ArrowColor              #475569
+skinparam ArrowThickness          2
+
+skinparam activity {
+    BackgroundColor        #FEF3C7
+    BorderColor            #D97706
+    FontColor              #1E293B
+    DiamondBackgroundColor #DBEAFE
+    DiamondBorderColor     #2563EB
+    StartColor             #059669
+    EndColor               #DC2626
+}
+
+title <size:18><b>GharBuddy — RAG Rule Consolidation Workflow</b></size>\n<i>Activity Diagram: Vector Store Deduplication via Bedrock</i>
+
+start
+
+:Trigger received:\nPOST /api/vectors/auto-consolidate\nor\nPOST /api/vectors/consolidate;
+
+#DBEAFE :Fetch all rules from VectorIndex table:\nSELECT ruleId, content, vector, category\nFROM VectorIndex;
+
+if (Total rule count > 20?) then (Yes — proceed)
+    #DBEAFE :Group rules by category:\n(override / safety / cultural / routine / energy);
+
+    :For each category group:;
+
+    partition "Per-Category Consolidation Loop" {
+        #FEF3C7 :Compute pairwise cosine similarities\nbetween all rules in this category;
+
+        if (Any pair has similarity > 0.90?) then (Overlap found)
+            #FEE2E2 :Select cluster of similar rules;
+
+            #FEF3C7 :Prepare consolidation prompt:\n──────────────────────\n"These rules overlap:\n  Rule A: '...'\n  Rule B: '...'\n  Rule C: '...'\nGenerate a single merged rule\nthat covers all cases concisely.";
+
+            #FEF3C7 :Send to AWS Bedrock Claude\n(generateMergedRule);
+
+            #D1FAE5 :Receive merged rule text;
+
+            #D1FAE5 :Embed merged rule via Titan Embeddings;
+
+            #D1FAE5 :INSERT merged rule into VectorIndex\n(same category);
+
+            #FEE2E2 :DELETE original overlapping rules\nfrom VectorIndex\n(WHERE ruleId IN (cluster ids));
+
+            note right
+                Net effect:
+                3 similar rules → 1 clean rule
+                Vector store stays concise
+                Future RAG queries more precise
+            end note
+
+        else (No overlap in this category)
+            #E2E8F0 :Skip — no merge needed;
+        endif
+    }
+
+    #D1FAE5 :Consolidation complete;\nReturn summary:\n──────────────────────\nrules_before: N\nrules_after: M\nmerges_performed: N - M;
+
+else (Total <= 20 — skip)
+    #E2E8F0 :Return:\n{ skipped: true,\n  reason: "Rule count <= 20" };
+endif
+
+stop
+
+@enduml

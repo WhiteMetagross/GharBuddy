@@ -1,0 +1,135 @@
+@startuml GharBuddy_System_Architecture
+
+!define PRESENTATION_COLOR #D1FAE5
+!define API_COLOR         #DBEAFE
+!define CONTEXT_COLOR     #FEE2E2
+!define AI_COLOR          #FEF3C7
+!define INFRA_COLOR       #F3E8FF
+
+skinparam BackgroundColor         #F8F9FA
+skinparam DefaultFontName         Calibri
+skinparam DefaultFontSize         12
+skinparam roundcorner             12
+skinparam ArrowColor              #475569
+skinparam ArrowThickness          2
+
+skinparam package {
+    BackgroundColor    #FFFFFF
+    BorderColor        #94A3B8
+    BorderThickness    2
+    FontColor          #1E293B
+    FontStyle          bold
+}
+
+skinparam component {
+    BackgroundColor    #FFFFFF
+    BorderColor        #64748B
+    FontColor          #1E293B
+    BorderThickness    1
+}
+
+skinparam database {
+    BackgroundColor    #EDE9FE
+    BorderColor        #7C3AED
+    FontColor          #1E293B
+}
+
+title <size:18><b>GharBuddy — System Architecture</b></size>\n<i>Context-Aware Proactive Smart Home for Indian Households</i>
+
+' ─────────────────────────────────────────────
+' PRESENTATION LAYER
+' ─────────────────────────────────────────────
+package "Presentation Layer  (React SPA)" as PRES PRESENTATION_COLOR {
+    [React App] as react
+    [SVG 2D Digital Twin] as twin
+    [Reasoning Panel] as reasoning
+    [Voice Widget (Whisper)] as voice
+    [Energy Tracker] as energy
+    [WhatsApp Mock Panel] as wamock
+    [Sensor Simulator] as sim
+}
+
+' ─────────────────────────────────────────────
+' API GATEWAY LAYER
+' ─────────────────────────────────────────────
+package "API Gateway  (FastAPI / Python)" as API API_COLOR {
+    [REST Endpoints] as rest
+    [WebSocket Broadcast] as ws
+    [AuthService (JWT HS256)] as auth
+    [DeviceRouter] as device
+    [EnergyRouter] as energyrouter
+    [VoiceRouter (Whisper ASR)] as voicerouter
+}
+
+' ─────────────────────────────────────────────
+' CONTEXT & ROUTINE ENGINE
+' ─────────────────────────────────────────────
+package "Context & Routine Engine" as CTX CONTEXT_COLOR {
+    [RoutinePredictor (LSTM + ONNX)] as lstm
+    [IndianCalendar\n(Festivals & Fasting)] as calendar
+    [CaregiverMonitor\n(Morning Anomaly Detector)] as caregiver
+    [LoadSheddingCalendar\n(Power-Cut Predictor)] as loadshed
+}
+
+' ─────────────────────────────────────────────
+' AI & SEMANTIC LAYER
+' ─────────────────────────────────────────────
+package "AI & Semantic Store  (AWS Bedrock)" as AI AI_COLOR {
+    [BedrockService\n(Claude 3.5 Sonnet)] as bedrock
+    [VectorStoreService\n(pgvector RAG)] as vector
+    [TitanEmbeddings\n(Multimodal 1536-dim)] as titan
+    [EmbeddingCache\n(MD5 Hash Lookup)] as emcache
+    [GeminiRedirect\n(Fallback Reasoner)] as gemini
+}
+
+' ─────────────────────────────────────────────
+' INFRA / DATA LAYER
+' ─────────────────────────────────────────────
+package "Infrastructure & Data" as INFRA INFRA_COLOR {
+    database "PostgreSQL + pgvector" as db {
+        [Devices]
+        [EventLogs]
+        [EnergyStats]
+        [VectorIndex\n(1536-dim embeddings)]
+        [EmbeddingCache\n(text → vector)]
+        [Users]
+    }
+    [Twilio WhatsApp API] as twilio
+    [AWS IoT Core\n(Device Shadows)] as iotcore
+    [Neon DB / AWS RDS] as rds
+}
+
+' ─────────────────────────────────────────────
+' RELATIONSHIPS
+' ─────────────────────────────────────────────
+
+' Presentation ↔ API
+react -[#0EA5E9,thickness=2]-> rest      : HTTP REST
+react -[#0EA5E9,thickness=2]<-> ws       : WebSocket (real-time)
+voice -[#0EA5E9]-> voicerouter           : Multipart audio
+sim -[#0EA5E9]-> rest                    : Sensor trigger events
+
+' API → Context Engine
+rest -[#4F46E5,thickness=2]-> lstm       : recordEvent / predictNextAction
+rest -[#4F46E5]-> calendar               : getCurrentFestival / isFasting
+rest -[#4F46E5]-> caregiver              : recordMotionEvent / checkAlert
+rest -[#4F46E5]-> loadshed               : getRiskScore / shouldPrecharge
+device -[#4F46E5]-> db                   : Toggle state / read devices
+energyrouter -[#4F46E5]-> db             : Read / update EnergyStats
+
+' API → AI Layer
+rest -[#7C3AED,thickness=2]-> bedrock    : generateReasoning(contextPacket)
+bedrock -[#7C3AED]-> vector              : querySimilarRules
+bedrock -[#7C3AED]..> gemini             : Fallback if no Bedrock creds
+vector -[#7C3AED]-> titan                : embedText (new rules)
+vector -[#7C3AED]-> emcache              : Cache check (MD5 hash)
+emcache -[#7C3AED]-> db                  : Read / Write EmbeddingCache
+vector -[#7C3AED]-> db                   : pgvector cosine similarity
+
+' API → Infra
+rest -[#059669,thickness=2]-> db         : Event logs / device state
+rest -[#059669]-> twilio                 : Hindi WhatsApp notification
+rest -[#059669]-> iotcore                : AWS IoT device shadow command
+db -[#059669]--> rds                     : Hosted on Neon / RDS
+
+@enduml

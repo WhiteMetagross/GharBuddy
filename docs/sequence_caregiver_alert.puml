@@ -1,0 +1,103 @@
+@startuml GharBuddy_Sequence_Caregiver_Alert
+
+skinparam BackgroundColor         #F8F9FA
+skinparam DefaultFontName         Calibri
+skinparam DefaultFontSize         12
+skinparam roundcorner             12
+skinparam ArrowThickness          2
+skinparam sequenceArrowThickness  2
+
+skinparam actor {
+    BackgroundColor  #FEE2E2
+    BorderColor      #DC2626
+    FontColor        #1E293B
+}
+
+skinparam participant {
+    BackgroundColor  #DBEAFE
+    BorderColor      #2563EB
+    FontColor        #1E293B
+}
+
+title <size:18><b>GharBuddy — Caregiver Safety Alert</b></size>\n<i>Sequence Diagram: No Morning Motion Anomaly Detection</i>
+
+actor Caregiver as caregiver_user
+
+box "Frontend" #EFF6FF
+    participant "React Client" as client
+end box
+
+box "FastAPI Backend" #F0FDF4
+    participant "FastAPI Server" as server
+    participant "CaregiverMonitor" as monitor
+end box
+
+box "Infrastructure" #FFF1F2
+    participant "PostgreSQL DB" as db
+    participant "Twilio WhatsApp" as twilio
+    participant "IndianCalendar" as calendar
+end box
+
+== Normal Day Start — No Motion Detected ==
+note over monitor
+    State on startup:
+    morningMotionDetected = false
+    alertFired = false
+    lastCheckedDate = null
+end note
+
+server -> calendar : getCurrentDateString()
+calendar --> server : "2026-06-15"
+
+== System Time Advances to 09:05 AM (settings/update) ==
+caregiver_user -> client : Push simulated time to 09:05 AM
+client -> server : POST /api/settings/update\n{ simulatedTime: "09:05:00", simulatedDate: "2026-06-15" }
+activate server
+
+server -> monitor : checkMorningAnomalyAlert("09:05:00", "2026-06-15")
+activate monitor
+
+monitor -> monitor : hourFloat = 9.083 (> 9.0 threshold ✓)
+monitor -> monitor : _lastCheckedDate != "2026-06-15"\n→ reset state, new day
+note right of monitor
+    After date reset:
+    morningMotionDetected = false
+    alertFired = false
+    lastCheckedDate = "2026-06-15"
+end note
+monitor -> monitor : _alertFired == false ✓
+monitor -> monitor : _morningMotionDetected == false ✓\n→ ALERT condition satisfied
+
+monitor -> twilio : sendWhatsApp(\n  "⚠️ सुरक्षा चेतावनी: सुबह 9 बजे तक\n   कोई हलचल नहीं पकड़ी गई।\n   कृपया घर के सदस्यों की जाँच करें।",\n  actionId: "caregiverMorningAnomaly"\n)
+twilio --> caregiver_user : WhatsApp SAFETY ALERT delivered
+
+monitor -> db : logEvent({\n  sensorId: "caregiverAlert",\n  value: "morningAnomalyDetected",\n  timestamp: "09:05:00"\n})
+db --> monitor : Row inserted
+
+monitor -> monitor : _alertFired = true (prevent double-fire)
+monitor --> server : alert dict returned
+deactivate monitor
+
+server -> client : broadcastSnapshot() — notifications include\ncaregiverMorningAnomaly alert entry
+client --> caregiver_user : Dashboard shows RED safety banner:\n"No morning motion by 9 AM — check household members"
+deactivate server
+
+== Caregiver Verifies & Resets Monitor ==
+caregiver_user -> client : Click [Reset Caregiver Monitor]
+client -> server : POST /api/safety/caregiver/reset
+activate server
+server -> monitor : resetForTesting()
+monitor -> monitor : morningMotionDetected = false\nalertFired = false\nlastCheckedDate = null
+server --> client : { status: "success", message: "Caregiver monitor reset." }
+client --> caregiver_user : Monitor reset — ready for next day
+deactivate server
+
+== Caregiver Polls Status ==
+caregiver_user -> client : View caregiver status
+client -> server : GET /api/safety/caregiver
+server -> monitor : getStatus()
+monitor --> server : {\n  morningMotionDetected: false,\n  alertFired: false,\n  lastCheckedDate: null\n}
+server --> client : Status payload
+client --> caregiver_user : Safety monitor: OK (reset)
+
+@enduml

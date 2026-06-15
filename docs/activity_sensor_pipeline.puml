@@ -1,0 +1,105 @@
+@startuml GharBuddy_Activity_Sensor_Pipeline
+
+skinparam BackgroundColor         #F8F9FA
+skinparam DefaultFontName         Calibri
+skinparam DefaultFontSize         12
+skinparam roundcorner             12
+skinparam ArrowColor              #475569
+skinparam ArrowThickness          2
+
+skinparam activity {
+    BackgroundColor    #DBEAFE
+    BorderColor        #2563EB
+    FontColor          #1E293B
+    DiamondBackgroundColor #FEF3C7
+    DiamondBorderColor     #D97706
+    StartColor         #059669
+    EndColor           #DC2626
+}
+
+skinparam activityArrow {
+    Color     #475569
+    FontColor #475569
+}
+
+title <size:18><b>GharBuddy — Sensor Event Processing Pipeline</b></size>\n<i>From Raw Sensor Input to Proactive AI Action</i>
+
+start
+
+:Sensor event fired\n<i>(toiletFlush / bathroomMotion / cookerWhistle / waterLevelLow / etc.)</i>;
+
+fork
+    #FEF3C7 :Log raw event to\n**EventLogs** table (PostgreSQL);
+fork again
+    #FEE2E2 :Pass to **CaregiverMonitor**;
+    if (Morning window 5–10 AM\nAND motion sensor?) then (Yes)
+        #D1FAE5 :morningMotionDetected = True\nalertFired = False;
+    else (No → skip)
+    endif
+fork again
+    #F3E8FF :Pass to **RoutinePredictor (LSTM)**;
+    #F3E8FF :Query local ONNX model\nwith 30-day event history;
+    #F3E8FF :Return predicted action\n+ confidence score;
+end fork
+
+#DBEAFE :Assemble **Situation Packet**\n──────────────────────\nSimulated time & date\nIs festival day? (IndianCalendar)\nIs fasting day?\nWhistle count / Power status\nLSTM predicted action\nEvent history window (30 min);
+
+if (EmbeddingCache hit\nfor this context?) then (Cache HIT)
+    #D1FAE5 :Retrieve vector coordinates\nfrom **EmbeddingCache** table;
+else (Cache MISS)
+    #FEE2E2 :Vectorize context via\n**Titan Multimodal Embeddings**;
+    #FEE2E2 :Run **pgvector cosine similarity**\nquery over VectorIndex table;
+    #FEE2E2 :Write new embedding\nto EmbeddingCache;
+endif
+
+#FEF3C7 :Retrieve top-k matching\n**RAG preference rules**\n(override / safety / cultural / routine / energy);
+
+#FEF3C7 :Send to **AWS Bedrock Claude 3.5 Sonnet**\nwith structured ~600-token context packet;
+
+note right
+    System prompt includes:
+    * GharBuddy role definition
+    * Indian household knowledge
+    * Strict JSON output format
+    * 5-level priority hierarchy
+end note
+
+if (AWS Bedrock available?) then (Yes)
+    #FEF3C7 :Claude generates reasoning\nwith conflict resolution;
+else (No → Fallback)
+    #FFE4E6 :Google Gemini Flash\nFallback Reasoner;
+    #FFE4E6 :Gemini generates reasoning;
+endif
+
+#DBEAFE :Parse decision JSON:\n──────────────────────\naction / deviceId\nconfidence (0.0–1.0)\nreason (English)\nexplanationHindi\nconflictDetected\nenergySavedWh;
+
+if (Conflict detected?) then (Yes)
+    #FFE4E6 :Apply Conflict Resolution Priority:\n1. User Override rules (highest)\n2. Safety guardrails\n3. Cultural / Fasting context\n4. LSTM Routine prediction\n5. Energy optimisation (lowest);
+else (No conflict)
+endif
+
+if (Confidence score?) then (> 0.85)
+    #D1FAE5 :AUTO-EXECUTE action;
+    #D1FAE5 :Toggle device state\nin Devices table;
+    #D1FAE5 :Send Hindi WhatsApp alert\nvia **Twilio** (action executed);
+    #D1FAE5 :Command AWS IoT Core\ndevice shadow → ON / OFF;
+elseif (0.70 – 0.85)
+    #FEF3C7 :SUGGEST action to user;
+    #FEF3C7 :Send suggestion via WhatsApp\n"क्या मैं गीज़र चालू करूँ?";
+    if (User approves?) then (Approve)
+        #D1FAE5 :Execute action;
+    else (Decline)
+        #FEE2E2 :Generate preference rule\nvia Bedrock;
+        #FEE2E2 :Embed rule and add to\n**VectorIndex** (override category);
+    endif
+else (< 0.70)
+    #E2E8F0 :NO ACTION — log event\nfor future LSTM training;
+endif
+
+#D1FAE5 :broadcastSnapshot()\nWebSocket push to all clients;
+
+#D1FAE5 :React frontend updates:\n──────────────────────\nDigital Twin device states\nReasoning Panel (decision + Hindi)\nRAG Rules similarity scores\nEnergy savings tracker;
+
+stop
+
+@enduml

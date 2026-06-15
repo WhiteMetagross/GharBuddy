@@ -1,0 +1,116 @@
+@startuml GharBuddy_Sequence_PowerCut_Recovery
+
+skinparam BackgroundColor         #F8F9FA
+skinparam DefaultFontName         Calibri
+skinparam DefaultFontSize         12
+skinparam roundcorner             12
+skinparam ArrowThickness          2
+skinparam sequenceArrowThickness  2
+
+skinparam actor {
+    BackgroundColor  #FEF3C7
+    BorderColor      #D97706
+    FontColor        #1E293B
+}
+
+skinparam participant {
+    BackgroundColor  #DBEAFE
+    BorderColor      #2563EB
+    FontColor        #1E293B
+}
+
+title <size:18><b>GharBuddy — Power-Cut Recovery Mode</b></size>\n<i>Sequence Diagram: Inverter Pre-Charge & Load Shedding Prediction</i>
+
+actor "Household Member" as user
+
+box "Frontend" #EFF6FF
+    participant "React Client" as client
+    participant "Energy Tracker" as energyUI
+end box
+
+box "FastAPI Backend" #F0FDF4
+    participant "FastAPI Server" as server
+end box
+
+box "Context Engine" #FFF7ED
+    participant "LoadSheddingCalendar" as loadshed
+    participant "RoutinePredictor" as lstm
+    participant "IndianCalendar" as calendar
+end box
+
+box "AI Brain" #FDF4FF
+    participant "BedrockService\n(Claude 3.5 Sonnet)" as bedrock
+    participant "VectorStoreService" as vector
+end box
+
+box "Infrastructure" #FFF1F2
+    participant "PostgreSQL DB" as db
+    participant "Twilio WhatsApp" as twilio
+    participant "IoT Core Shadow" as iot
+end box
+
+== 6:15 PM — Pre-Cut Risk Assessment ==
+user -> client : Time warp set to 18:15:00\n(via settings or realtime)
+client -> server : POST /api/settings/update\n{ simulatedTime: "18:15:00" }
+activate server
+
+server -> loadshed : getRiskScore("18:15:00", currentDate)
+activate loadshed
+loadshed -> loadshed : Check regional power schedule data\nTime 18:15 in high-risk window ✓
+loadshed --> server : { riskScore: 0.87, nextCutStart: 18.5,\n  shouldPrecharge: true,\n  recommendation: "precharge_inverter" }
+deactivate loadshed
+
+server -> calendar : isFastingDay() / getFestivalName()
+calendar --> server : { isFasting: false }
+
+server -> lstm : predictNextAction(powerCutRiskHigh event)
+activate lstm
+lstm --> server : { predictedAction: "prechargeInverter",\n  confidence: 0.88 }
+deactivate lstm
+
+server -> vector : querySimilarRules("Power cut risk high, 6:15 PM")
+activate vector
+vector -> db : pgvector cosine similarity query
+db --> vector : Matching rule: "On high power-cut risk,\n precharge inverter and dim non-essential lights"
+vector --> server : ragContext: [rule match, similarity: 0.91]
+deactivate vector
+
+server -> bedrock : generateReasoning({\n  event: "powerCutRiskHigh",\n  riskScore: 0.87,\n  predictedAction: "prechargeInverter",\n  ragContext: [inverter rule]\n})
+activate bedrock
+bedrock --> server : {\n  shouldExecute: true,\n  action: "prechargeInverter",\n  confidence: 0.91,\n  additionalActions: ["dimLivingRoomLights", "deferWashingMachine"],\n  reason: "Power cut probability 87%",\n  explanationHindi: "बिजली कटौती संभव — इन्वर्टर चार्ज हो रहा है",\n  energySavedWh: 280\n}
+deactivate bedrock
+
+server -> iot : PutThingShadow(inverterCharging → true)
+iot --> server : Acknowledged
+
+server -> db : UPDATE Devices SET status="CHARGING" WHERE deviceId="inverter"
+server -> db : UPDATE EnergyStats SET inverterCharge=85, peakPowerAvoidedW=1200
+
+server -> twilio : sendWhatsApp(\n  "⚡ बिजली कटौती की संभावना 87% — इन्वर्टर चार्ज हो रहा है।\n   वाशिंग मशीन: स्थगित। लाइटें: धीमी।",\n  actionId: "prechargeInverter"\n)
+twilio --> user : WhatsApp alert delivered
+
+server -> client : broadcastSnapshot()
+client -> energyUI : Update Energy Tracker:\n- Inverter: CHARGING\n- Risk badge: HIGH (87%)\n- Estimated saving: Rs. 280
+energyUI --> user : Dashboard shows load-shedding alert\nand inverter charging status
+deactivate server
+
+== 6:35 PM — Power Actually Cuts ==
+note over server : Simulated power status switches\nfrom GRID → INVERTER
+client -> server : POST /api/settings/update { powerStatus: "INVERTER" }
+activate server
+server -> db : UPDATE SystemState SET powerStatus="INVERTER"
+server -> client : broadcastSnapshot() — powerStatus: INVERTER
+client --> user : Digital Twin shows INVERTER mode\nRooms switch to dim lighting automatically
+deactivate server
+
+== 7:30 PM — Power Restored ==
+client -> server : POST /api/settings/update { powerStatus: "GRID" }
+activate server
+server -> db : UPDATE SystemState SET powerStatus="GRID"
+server -> twilio : sendWhatsApp("✅ बिजली वापस आ गई है।\n   इन्वर्टर चार्जिंग रोकी गई।")
+twilio --> user : WhatsApp restoration alert
+server -> client : broadcastSnapshot()
+client --> user : Dashboard updates — GRID mode restored
+deactivate server
+
+@enduml

@@ -1,0 +1,111 @@
+@startuml GharBuddy_Sequence_WebSocket_Sync
+
+skinparam BackgroundColor         #F8F9FA
+skinparam DefaultFontName         Calibri
+skinparam DefaultFontSize         12
+skinparam roundcorner             12
+skinparam ArrowThickness          2
+skinparam sequenceArrowThickness  2
+
+skinparam actor {
+    BackgroundColor  #D1FAE5
+    BorderColor      #059669
+    FontColor        #1E293B
+}
+
+skinparam participant {
+    BackgroundColor  #DBEAFE
+    BorderColor      #2563EB
+    FontColor        #1E293B
+}
+
+title <size:18><b>GharBuddy — Real-Time WebSocket State Sync</b></size>\n<i>Sequence Diagram: Connection Lifecycle, Heartbeat & State Broadcast</i>
+
+actor "User (Browser)" as user
+
+box "Frontend (React)" #EFF6FF
+    participant "App Component" as app
+    participant "useWebSocket Hook" as hook
+    participant "computeBackoffDelay" as backoff
+end box
+
+box "FastAPI Backend" #F0FDF4
+    participant "FastAPI /ws endpoint" as wsserver
+    participant "ConnectionManager" as conmgr
+end box
+
+box "Mutation Endpoints" #FFF7ED
+    participant "DeviceToggle / SensorTrigger" as mutations
+end box
+
+== Initial WebSocket Connection ==
+user -> app : Open application
+app -> hook : mount → initWebSocket()
+hook -> wsserver : WS Upgrade Request: ws://host:8000/ws
+activate wsserver
+wsserver -> conmgr : manager.connect(websocket)
+conmgr --> wsserver : Added to active_connections[]
+wsserver --> hook : Connection OPEN
+hook --> app : isConnected = true
+app --> user : Connected indicator shown (green dot)
+
+wsserver -> hook : broadcastSnapshot() on connect\n→ Initial state snapshot
+hook -> app : setDevices() / setSystemState()\n/ setEnergyStats() / setNotifications()
+app --> user : Full dashboard rendered
+
+== Heartbeat Loop (every 30s) ==
+loop Every 30 seconds
+    wsserver -> hook : { "type": "ping" }
+    hook -> app : ignore (not state update)
+end
+
+== Device Toggle via REST → WebSocket Broadcast ==
+user -> app : Toggle Geyser switch
+app -> mutations : POST /api/devices/toggle\n{ deviceId: "geyser", status: "ON" }
+activate mutations
+mutations -> mutations : Update Devices table
+mutations -> conmgr : broadcastSnapshot() to ALL connections
+conmgr -> hook : StateSnapshot JSON:\n{ devices: {...geyser: ON}, systemState, energyStats, notifications }
+hook -> app : Update local React state
+app --> user : Geyser shown as ON in Digital Twin\n(< 100ms latency)
+deactivate mutations
+
+== Sensor Trigger → Broadcast to All Clients ==
+note over mutations : Another browser tab / device also connected
+mutations -> conmgr : Sensor trigger processed, action executed
+conmgr -> hook : StateSnapshot broadcast
+hook -> app : All client tabs update simultaneously
+app --> user : Live updates across all open sessions
+
+== WebSocket Disconnect / Reconnect with Backoff ==
+wsserver -> hook : Connection CLOSE (network drop)
+hook -> hook : isConnected = false
+hook -> backoff : computeBackoffDelay(attempt=1)
+backoff --> hook : delay = 1000ms (base)
+hook -> hook : setTimeout(reconnect, 1000ms)
+
+hook -> wsserver : Reconnect attempt 1
+wsserver --> hook : Connection refused (server restarting)
+
+hook -> backoff : computeBackoffDelay(attempt=2)
+backoff --> hook : delay = 2000ms (exponential)
+hook -> hook : setTimeout(reconnect, 2000ms)
+
+hook -> wsserver : Reconnect attempt 2
+wsserver -> conmgr : manager.connect(websocket)
+conmgr --> wsserver : Reconnected
+wsserver --> hook : Connection OPEN
+
+wsserver -> hook : broadcastSnapshot() — re-sync full state
+hook -> app : Full state re-hydration
+app --> user : Dashboard restored — reconnected indicator shown
+
+== Graceful Disconnect on Unmount ==
+user -> app : Navigate away / close tab
+app -> hook : unmount → cleanup()
+hook -> wsserver : WS Close Frame
+wsserver -> conmgr : manager.disconnect(websocket)
+conmgr -> conmgr : Remove from active_connections[]
+deactivate wsserver
+
+@enduml

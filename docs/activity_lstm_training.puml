@@ -1,0 +1,71 @@
+@startuml GharBuddy_Activity_LSTM_Weekly_Training
+
+skinparam BackgroundColor         #F8F9FA
+skinparam DefaultFontName         Calibri
+skinparam DefaultFontSize         12
+skinparam roundcorner             12
+skinparam ArrowColor              #475569
+skinparam ArrowThickness          2
+
+skinparam activity {
+    BackgroundColor        #F3E8FF
+    BorderColor            #7C3AED
+    FontColor              #1E293B
+    DiamondBackgroundColor #FEF3C7
+    DiamondBorderColor     #D97706
+    StartColor             #059669
+    EndColor               #DC2626
+}
+
+title <size:18><b>GharBuddy — LSTM Weekly Retraining Workflow</b></size>\n<i>Activity Diagram: Background Scheduler & Model Lifecycle</i>
+
+start
+
+:FastAPI server starts;
+:Background daemon thread spawned\n(training_loop_thread);
+:Enter weekly sleep cycle\n(datetime interval: 7 days);
+
+repeat
+    :Wake up from 7-day sleep;
+
+    #DBEAFE :Fetch EventLogs from PostgreSQL:\nSELECT * FROM EventLogs\nWHERE timestamp > (now - 30 days)\nORDER BY timestamp ASC;
+
+    if (Sufficient training events?\n(minimum 50 confirmed actions)) then (Yes)
+        #D1FAE5 :Load existing ONNX model\n(Backend/Data/routine_lstm.onnx);
+
+        #D1FAE5 :Build training tensors:\n──────────────────────\nhour-of-day (0–23)\nday-of-week (0–6)\nis_festival (bool)\nis_fasting (bool)\nsensor_event_type (encoded)\npredicted_action (label);
+
+        #FEF3C7 :Train PyTorch LSTM model:\n──────────────────────\nHidden dim: 128\nNum layers: 2\nSequence length: 48 slots/day\nEpochs: 50\nLoss: CrossEntropyLoss\nOptimizer: Adam (lr=0.001);
+
+        #FEF3C7 :Evaluate model on\nheld-out validation set;
+
+        if (Validation accuracy\n>= 87%?) then (Improved)
+            #D1FAE5 :Export model to ONNX:\ntorch.onnx.export(...);
+            #D1FAE5 :Overwrite routine_lstm.onnx;
+            note right
+                Model hot-reloaded on
+                next inference call.
+                No server restart needed.
+            end note
+        else (Degraded)
+            #FEE2E2 :Discard new weights;\n Retain existing onnx;
+            #FEE2E2 :Log degraded training attempt;
+        endif
+
+    else (No / Insufficient data)
+        #E2E8F0 :Skip this cycle;\n Log: "Insufficient events";
+    endif
+
+    if (Manual trigger received?\nPOST /api/admin/train-lstm) then (Yes)
+        #FEF3C7 :Force immediate retrain\n(skip 7-day wait);
+    else (No)
+    endif
+
+    :Sleep for 7 more days;
+
+repeat while (Server running?) is (Yes)
+-> No (Server shutting down);
+
+stop
+
+@enduml
