@@ -396,6 +396,30 @@ def _hydrateUsersOnStartup():
     except Exception as e:
         print(f"[Auth] Skipped user hydration: {e}")
 
+    # Start weekly LSTM training scheduler thread
+    import threading
+    import datetime
+    import time
+    
+    def run_weekly_lstm_training():
+        while True:
+            now = datetime.datetime.now()
+            # Run weekly on Sunday at 02:00:00 AM
+            if now.weekday() == 6 and now.hour == 2:
+                print("[Weekly Scheduler] Starting weekly LSTM training routine...")
+                try:
+                    from Backend.Data.train_lstm import main as train_main
+                    train_main()
+                    print("[Weekly Scheduler] LSTM training routine completed successfully.")
+                except Exception as e:
+                    print(f"[Weekly Scheduler] LSTM training routine failed: {e}")
+                time.sleep(3600)  # Avoid double triggers
+            time.sleep(60)
+
+    thread = threading.Thread(target=run_weekly_lstm_training, daemon=True)
+    thread.start()
+    print("[Weekly Scheduler] Weekly LSTM training routine scheduler started.")
+
 
 @app.post("/api/auth/register", status_code=201)
 def register(req: RegisterRequest):
@@ -595,6 +619,21 @@ def getCaregiverStatus():
 def resetCaregiverMonitor():
     caregiverMonitor.resetForTesting()
     return {"status": "success", "message": "Caregiver monitor reset."}
+
+@app.post("/api/admin/train-lstm")
+def triggerLstmTraining(background_tasks: BackgroundTasks, user: str = Depends(requireAuth)):
+    """Manually trigger the weekly LSTM training routine in the background."""
+    def run_train():
+        try:
+            print("[API Trigger] Starting LSTM training routine in background...")
+            from Backend.Data.train_lstm import main as train_main
+            train_main()
+            print("[API Trigger] LSTM training routine completed successfully.")
+        except Exception as e:
+            print(f"[API Trigger] LSTM training routine failed: {e}")
+
+    background_tasks.add_task(run_train)
+    return {"message": "LSTM training routine started in the background."}
 
 # Voice intent → device action mapping
 VOICE_INTENT_MAP = {
