@@ -49,6 +49,14 @@ Set up the React application:
 - Open `http://localhost:5173` in your browser.
 - Select the demo user option on the login page.
 
+### 3. Google OAuth Setup:
+- Access the Google Cloud Console.
+- Navigate to APIs and Services, then select Credentials.
+- Select your OAuth 2.0 Client ID or create a new one.
+- Under Authorized JavaScript Origins, add `http://localhost:5173`.
+- Under Authorized Redirect URIs, add `http://localhost:5173/login`.
+- Update `clientId` in `Frontend/Src/pages/Login.jsx` and `GOOGLE_CLIENT_ID` in `.env` if utilizing a personalized Client ID.
+
 ## Running Tests:
 
 Run the automated test suites:
